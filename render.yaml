@@ -3,8 +3,18 @@ services:
     name: sistema-manutencao-sakamoto
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python patch_login.py && gunicorn app:app
+    startCommand: gunicorn app:app
     healthCheckPath: /login
     envVars:
       - key: SECRET_KEY
         generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sakamoto-db
+          property: connectionString
+
+databases:
+  - name: sakamoto-db
+    databaseName: sakamoto
+    user: sakamoto
+    plan: free
