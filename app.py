@@ -1,381 +1,277 @@
-import os
-import sqlite3
-import csv
-from datetime import datetime
+import io, os, csv, secrets
+from datetime import datetime, timedelta
 from functools import wraps
-from flask import Flask, request, redirect, url_for, session, render_template_string, send_file, flash
+from flask import Flask, request, redirect, url_for, session, render_template_string, send_file, flash, abort
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
+from sqlalchemy import create_engine, String, Integer, DateTime, Text, LargeBinary, ForeignKey, Boolean, or_, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'sistema.db')
-UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads')
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+APP='Sakamoto | Manutenção'
+DB=os.getenv('DATABASE_URL','sqlite:///sistema.db')
+if DB.startswith('postgres://'): DB=DB.replace('postgres://','postgresql+psycopg://',1)
+if DB.startswith('postgresql://'): DB=DB.replace('postgresql://','postgresql+psycopg://',1)
+engine=create_engine(DB,pool_pre_ping=True)
+Session=sessionmaker(bind=engine,expire_on_commit=False)
+class Base(DeclarativeBase): pass
 
-app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'troque-esta-chave-no-render')
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
-ROLES = {'administrador', 'chefe', 'funcionario'}
+class User(Base):
+    __tablename__='users'
+    id:Mapped[int]=mapped_column(primary_key=True)
+    name:Mapped[str]=mapped_column(String(120))
+    username:Mapped[str]=mapped_column(String(80),unique=True,index=True)
+    password_hash:Mapped[str]=mapped_column(String(255))
+    role:Mapped[str]=mapped_column(String(20),default='funcionario')
+    active:Mapped[bool]=mapped_column(Boolean,default=True)
+    failed:Mapped[int]=mapped_column(Integer,default=0)
+    locked_until:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
+    created_at:Mapped[datetime]=mapped_column(DateTime,default=datetime.now)
+    last_login:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
 
+class Order(Base):
+    __tablename__='orders'
+    id:Mapped[int]=mapped_column(primary_key=True)
+    number:Mapped[str]=mapped_column(String(40),unique=True,index=True)
+    product:Mapped[str]=mapped_column(String(160))
+    client_sector:Mapped[str]=mapped_column(String(160),default='')
+    problem:Mapped[str]=mapped_column(Text,default='')
+    priority:Mapped[str]=mapped_column(String(30),default='normal')
+    status:Mapped[str]=mapped_column(String(30),default='aguardando')
+    responsible_id:Mapped[int|None]=mapped_column(ForeignKey('users.id'),nullable=True)
+    created_by:Mapped[int]=mapped_column(ForeignKey('users.id'))
+    created_at:Mapped[datetime]=mapped_column(DateTime,default=datetime.now)
+    started_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
+    finished_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
+    parts:Mapped[str]=mapped_column(Text,default='')
+    notes:Mapped[str]=mapped_column(Text,default='')
+    photo:Mapped[bytes|None]=mapped_column(LargeBinary,nullable=True)
+    photo_name:Mapped[str|None]=mapped_column(String(255),nullable=True)
 
-def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+class Audit(Base):
+    __tablename__='audit'
+    id:Mapped[int]=mapped_column(primary_key=True)
+    user_id:Mapped[int|None]=mapped_column(ForeignKey('users.id'),nullable=True)
+    action:Mapped[str]=mapped_column(String(100))
+    details:Mapped[str]=mapped_column(Text,default='')
+    created_at:Mapped[datetime]=mapped_column(DateTime,default=datetime.now)
 
+Base.metadata.create_all(engine)
 
-def now():
-    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+app=Flask(__name__)
+app.secret_key=os.getenv('SECRET_KEY',secrets.token_hex(32))
+app.config['MAX_CONTENT_LENGTH']=12*1024*1024
+ROLES={'admin':'Administrador','chefe':'Chefe','funcionario':'Funcionário'}
 
+def log(db,action,details=''): db.add(Audit(user_id=session.get('uid'),action=action,details=details))
+def is_manager(): return session.get('role') in ('admin','chefe')
+def auth(f):
+    @wraps(f)
+    def w(*a,**k):
+        if not session.get('uid'): return redirect(url_for('login'))
+        return f(*a,**k)
+    return w
+def manager(f):
+    @wraps(f)
+    def w(*a,**k):
+        if not is_manager(): abort(403)
+        return f(*a,**k)
+    return w
+def priority(o):
+    if o.status=='finalizado': return o.priority
+    age=(datetime.now()-o.created_at).days
+    base={'normal':1,'pouca urgencia':2,'urgente':3}.get(o.priority,1)
+    return ['normal','pouca urgencia','urgente'][min(3,base+(age>=3)+(age>=7))-1]
+def visible(q):
+    if session.get('role')=='funcionario': return q.filter(or_(Order.responsible_id==session['uid'],Order.created_by==session['uid']))
+    return q
 
-def init_db():
-    conn = db()
-    conn.executescript('''
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'funcionario',
-        active INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL DEFAULT ''
-    );
-    CREATE TABLE IF NOT EXISTS audit_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        actor_id INTEGER,
-        action TEXT NOT NULL,
-        target_username TEXT,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(actor_id) REFERENCES users(id)
-    );
-    CREATE TABLE IF NOT EXISTS items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_name TEXT NOT NULL,
-        description TEXT,
-        photo TEXT,
-        urgency TEXT NOT NULL DEFAULT 'normal',
-        status TEXT NOT NULL DEFAULT 'aguardando',
-        created_at TEXT NOT NULL,
-        started_at TEXT,
-        finished_at TEXT,
-        created_by INTEGER,
-        assigned_to INTEGER,
-        notes TEXT
-    );
-    CREATE TABLE IF NOT EXISTS autosaves (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        item_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        content TEXT,
-        saved_at TEXT NOT NULL
-    );
-    ''')
-    # Migração para instalações antigas.
-    cols = {r['name'] for r in conn.execute('PRAGMA table_info(users)').fetchall()}
-    if 'active' not in cols:
-        conn.execute('ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1')
-    if 'created_at' not in cols:
-        conn.execute("ALTER TABLE users ADD COLUMN created_at TEXT NOT NULL DEFAULT ''")
-    conn.execute("UPDATE users SET created_at=? WHERE created_at='' OR created_at IS NULL", (now(),))
-    # Converte os perfis antigos para os novos nomes.
-    conn.execute("UPDATE users SET role='chefe' WHERE role='boss'")
-    conn.execute("UPDATE users SET role='funcionario' WHERE role='employee'")
-    if conn.execute('SELECT COUNT(*) FROM users').fetchone()[0] == 0:
-        conn.execute('INSERT INTO users(name,username,password_hash,role,active,created_at) VALUES(?,?,?,?,?,?)',
-                     ('Administrador', 'admin', generate_password_hash('123456'), 'administrador', 1, now()))
-        conn.execute('INSERT INTO users(name,username,password_hash,role,active,created_at) VALUES(?,?,?,?,?,?)',
-                     ('Chefe', 'chefe', generate_password_hash('123456'), 'chefe', 1, now()))
-        conn.execute('INSERT INTO users(name,username,password_hash,role,active,created_at) VALUES(?,?,?,?,?,?)',
-                     ('Funcionário 1', 'funcionario1', generate_password_hash('123456'), 'funcionario', 1, now()))
-    conn.commit()
-    conn.close()
+def seed():
+    with Session() as db:
+        if not db.query(User).count():
+            db.add_all([User(name='Administrador',username='admin',password_hash=generate_password_hash('123456'),role='admin'),User(name='Chefe',username='chefe',password_hash=generate_password_hash('123456'),role='chefe'),User(name='Funcionário 1',username='funcionario1',password_hash=generate_password_hash('123456'),role='funcionario')]); db.commit()
+seed()
 
+@app.context_processor
+def ctx(): return {'roles':ROLES,'app_name':APP,'me':session.get('name'),'myrole':ROLES.get(session.get('role'),'')}
 
-def login_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if 'user_id' not in session:
-            return redirect(url_for('login'))
-        return fn(*args, **kwargs)
-    return wrapper
+CSS='''<style>*{box-sizing:border-box}body{margin:0;font-family:Inter,Arial;background:#f4f7f2;color:#172218}.side{position:fixed;inset:0 auto 0 0;width:245px;background:#071007;color:#fff;padding:22px 14px}.brand{font-weight:900;font-size:22px;color:#ffd500;padding:8px 12px 26px}.brand small{display:block;color:#65ff20;font-size:10px;letter-spacing:2px;margin-top:4px}.nav a{display:block;color:#cbd7c8;text-decoration:none;padding:12px;border-radius:9px;margin:3px 0}.nav a:hover{background:#173018;color:#fff}.main{margin-left:245px;min-height:100vh}.top{height:70px;background:#fff;border-bottom:1px solid #e2e9df;padding:0 28px;display:flex;justify-content:space-between;align-items:center}.content{padding:28px;max-width:1500px}.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:14px}.card,.panel,.form{background:#fff;border:1px solid #e2e9df;border-radius:15px;padding:20px;box-shadow:0 5px 20px #00000008}.num{font-size:30px;font-weight:900;margin-top:8px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-top:18px}.btn{display:inline-block;border:0;border-radius:9px;padding:10px 14px;background:#132313;color:#fff;text-decoration:none;cursor:pointer}.primary{background:linear-gradient(90deg,#ffd500,#70ef16);color:#071000;font-weight:900}.danger{background:#b4232d}.muted{color:#718070;font-size:13px}.tag{padding:5px 9px;border-radius:99px;background:#edf2ea;font-size:11px}.urgent{background:#ffe1e1;color:#9b0000}.warning{background:#fff0c7;color:#795500}table{width:100%;border-collapse:collapse}th,td{padding:11px;border-bottom:1px solid #edf1eb;text-align:left;font-size:13px}th{background:#f5f8f3}.form{max-width:850px}.form input,.form select,.form textarea{width:100%;padding:12px;margin:5px 0 14px;border:1px solid #d6dfd3;border-radius:9px}.actions{display:flex;gap:8px;flex-wrap:wrap}.photo{max-width:300px;border-radius:12px}.bar{height:8px;background:#e7eee5;border-radius:9px}.bar i{display:block;height:100%;background:#5ae31c;border-radius:9px}@media(max-width:900px){.side{position:relative;width:100%;height:auto}.main{margin-left:0}.cards{grid-template-columns:repeat(2,1fr)}}@media(max-width:600px){.cards{grid-template-columns:1fr}.content{padding:15px}.top{padding:0 15px}}</style>'''
+LAYOUT='''<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{app_name}}</title>'''+CSS+'''</head><body><aside class="side"><div class="brand">SAKAMOTO<small>VARIEDADES E TECNOLOGIA</small></div><nav class="nav"><a href="/dashboard">📊 Dashboard</a><a href="/ordens">🧰 Ordens de serviço</a><a href="/ordem/nova">➕ Nova ordem</a><a href="/relatorios">📄 Relatórios</a>{% if myrole in ['Administrador','Chefe'] %}<a href="/usuarios">👥 Funcionários</a><a href="/historico">🕘 Histórico</a>{% endif %}<a href="/logout">↪ Sair</a></nav></aside><main class="main"><header class="top"><b>{{myrole}}</b><span>{{me}} · <a href="/logout">Sair</a></span></header><section class="content">{% for m in get_flashed_messages() %}<div class="panel" style="margin-bottom:15px">{{m}}</div>{% endfor %}{{body|safe}}</section></main></body></html>'''
+def page(body): return render_template_string(LAYOUT,body=body)
 
-
-def manager_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if session.get('role') not in ('administrador', 'chefe'):
-            flash('Somente administrador ou chefe pode acessar esta área.')
-            return redirect(url_for('dashboard'))
-        return fn(*args, **kwargs)
-    return wrapper
-
-
-def audit(action, target=None):
-    conn = db()
-    conn.execute('INSERT INTO audit_logs(actor_id,action,target_username,created_at) VALUES(?,?,?,?)',
-                 (session.get('user_id'), action, target, now()))
-    conn.commit()
-    conn.close()
-
-
-def priority(created_at, manual):
-    try:
-        age_days = (datetime.now() - datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')).days
-    except ValueError:
-        age_days = 0
-    base = {'normal': 1, 'pouca urgência': 2, 'urgente': 3}.get(manual, 1)
-    score = min(3, base + (1 if age_days >= 3 else 0) + (1 if age_days >= 7 else 0))
-    return {1: 'normal', 2: 'pouca urgência', 3: 'urgente'}[score]
-
+LOGIN='''<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Acesso | Sakamoto</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 50% 15%,#173d0c,#061006 55%,#020402);font-family:Arial;color:#fff}.box{width:min(430px,92vw);padding:34px;border:1px solid #3e7131;border-radius:24px;background:#061006e8;box-shadow:0 0 60px #55ff0026;text-align:center}.logo{width:190px;height:190px}.title{font-size:26px;font-weight:900;color:#ffd900}.sub{font-size:11px;letter-spacing:3px;color:#61ff18;margin:6px 0 25px}.field{text-align:left;margin:12px 0}.field label{font-size:11px;color:#b9c8b3}.field input{width:100%;padding:14px;margin-top:6px;border:1px solid #29442a;border-radius:12px;background:#0b180b;color:#fff}.pass{position:relative}.eye{position:absolute;right:8px;top:13px;background:none;border:0;color:#8cff55;cursor:pointer}.submit{width:100%;padding:14px;border:0;border-radius:12px;background:linear-gradient(90deg,#ffd500,#75ff16);font-weight:900;cursor:pointer}.link{display:block;color:#8cff55;text-decoration:none;font-size:12px;margin-top:15px}.flash{background:#481b1b;color:#ffc0c0;padding:10px;border-radius:10px;font-size:13px}</style></head><body><div class="box"><img class="logo" src="/static/logo.svg"><div class="title">SAKAMOTO</div><div class="sub">VARIEDADES E TECNOLOGIA</div>{% for m in get_flashed_messages() %}<p class="flash">{{m}}</p>{% endfor %}<form method="post"><div class="field"><label>USUÁRIO</label><input name="username" autocomplete="username" required></div><div class="field"><label>SENHA</label><div class="pass"><input id="password" type="password" name="password" autocomplete="current-password" required><button class="eye" type="button" onclick="togglePass()">👁</button></div></div><div style="text-align:left;font-size:12px;color:#aebca8;margin:10px 0"><input type="checkbox" name="remember" value="1"> Lembrar acesso</div><button class="submit">ENTRAR NO SISTEMA</button></form><a class="link" href="/recuperar">Esqueci minha senha</a></div><script>function togglePass(){let p=document.getElementById('password');p.type=p.type==='password'?'text':'password'}</script></body></html>'''
 
 @app.route('/')
-def index():
-    return redirect(url_for('dashboard')) if 'user_id' in session else redirect(url_for('login'))
-
-
-@app.route('/login', methods=['GET', 'POST'])
+def index(): return redirect(url_for('dashboard')) if session.get('uid') else redirect(url_for('login'))
+@app.route('/login',methods=['GET','POST'])
 def login():
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '')
-        conn = db()
-        user = conn.execute('SELECT * FROM users WHERE username=? AND active=1', (username,)).fetchone()
-        conn.close()
-        if user and check_password_hash(user['password_hash'], password):
-            session.update(user_id=user['id'], username=user['username'], name=user['name'], role=user['role'])
-            audit('LOGIN', username)
-            return redirect(url_for('dashboard'))
-        flash('Usuário ou senha inválidos.')
-    return render_template_string(LOGIN_HTML)
-
-
+    if request.method=='POST':
+        with Session() as db:
+            u=db.query(User).filter(func.lower(User.username)==request.form.get('username','').strip().lower()).first()
+            if not u or not u.active: flash('Usuário ou senha inválidos.'); return render_template_string(LOGIN)
+            if u.locked_until and u.locked_until>datetime.now(): flash('Conta temporariamente bloqueada.'); return render_template_string(LOGIN)
+            if not check_password_hash(u.password_hash,request.form.get('password','')):
+                u.failed+=1
+                if u.failed>=5: u.failed=0;u.locked_until=datetime.now()+timedelta(minutes=15);log(db,'BLOQUEIO_LOGIN',u.username)
+                db.commit();flash('Usuário ou senha inválidos.');return render_template_string(LOGIN)
+            u.failed=0;u.locked_until=None;u.last_login=datetime.now();session.permanent=request.form.get('remember')=='1';session.update(uid=u.id,name=u.name,username=u.username,role=u.role);log(db,'LOGIN',u.username);db.commit()
+        return redirect(url_for('dashboard'))
+    return render_template_string(LOGIN)
 @app.route('/logout')
 def logout():
-    if session.get('user_id'):
-        audit('LOGOUT', session.get('username'))
-    session.clear()
-    return redirect(url_for('login'))
-
-
-@app.route('/usuarios', methods=['GET', 'POST'])
-@login_required
-@manager_required
-def users():
-    conn = db()
-    if request.method == 'POST':
-        name = request.form.get('name', '').strip()
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '')
-        role = request.form.get('role', 'funcionario')
-        if not name or not username or len(password) < 6 or role not in ROLES:
-            flash('Preencha todos os campos. A senha deve ter pelo menos 6 caracteres.')
-        else:
-            try:
-                conn.execute('INSERT INTO users(name,username,password_hash,role,active,created_at) VALUES(?,?,?,?,?,?)',
-                             (name, username, generate_password_hash(password), role, 1, now()))
-                conn.commit()
-                audit('CRIAR_USUARIO', username)
-                flash('Usuário criado e salvo no banco de dados.')
-            except sqlite3.IntegrityError:
-                flash('Esse login já existe.')
-    rows = conn.execute('SELECT id,name,username,role,active,created_at FROM users ORDER BY name').fetchall()
-    conn.close()
-    return render_template_string(USERS_HTML, users=rows)
-
-
-@app.route('/usuarios/<int:user_id>/toggle', methods=['POST'])
-@login_required
-@manager_required
-def toggle_user(user_id):
-    conn = db()
-    user = conn.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
-    if user and user['id'] != session['user_id']:
-        new_status = 0 if user['active'] else 1
-        conn.execute('UPDATE users SET active=? WHERE id=?', (new_status, user_id))
-        conn.commit()
-        audit('ALTERAR_STATUS_USUARIO', user['username'])
-    conn.close()
-    return redirect(url_for('users'))
-
-
-@app.route('/usuarios/logins')
-@login_required
-@manager_required
-def login_history():
-    conn = db()
-    logs = conn.execute('''SELECT l.*, u.name actor_name FROM audit_logs l
-                           LEFT JOIN users u ON u.id=l.actor_id
-                           ORDER BY l.created_at DESC LIMIT 500''').fetchall()
-    conn.close()
-    return render_template_string(LOGS_HTML, logs=logs)
-
+    if session.get('uid'):
+        with Session() as db: log(db,'LOGOUT',session.get('username'));db.commit()
+    session.clear();return redirect(url_for('login'))
+@app.route('/recuperar',methods=['GET','POST'])
+def recover():
+    if request.method=='POST':
+        with Session() as db: log(db,'SOLICITACAO_SENHA',request.form.get('username',''));db.commit()
+        flash('Solicitação registrada. O administrador poderá redefinir sua senha no painel.');return redirect(url_for('login'))
+    return page('<div class="form"><h1>Recuperação de senha</h1><p class="muted">Informe seu usuário. A solicitação será registrada para o administrador.</p><form method="post"><input name="username" placeholder="Usuário" required><button class="btn primary">Solicitar</button></form></div>')
 
 @app.route('/dashboard')
-@login_required
+@auth
 def dashboard():
-    conn = db()
-    manager = session['role'] in ('administrador', 'chefe')
-    if manager:
-        items = conn.execute('''SELECT i.*, u.name assigned_name FROM items i
-                                LEFT JOIN users u ON u.id=i.assigned_to
-                                ORDER BY i.status='finalizado', i.created_at''').fetchall()
-        repaired = conn.execute("SELECT COUNT(*) FROM items WHERE status='finalizado'").fetchone()[0]
-    else:
-        items = conn.execute('''SELECT i.*, u.name assigned_name FROM items i
-                                LEFT JOIN users u ON u.id=i.assigned_to
-                                WHERE i.assigned_to=? OR i.created_by=?
-                                ORDER BY i.status='finalizado', i.created_at''',
-                               (session['user_id'], session['user_id'])).fetchall()
-        repaired = conn.execute("SELECT COUNT(*) FROM items WHERE status='finalizado' AND assigned_to=?",
-                                (session['user_id'],)).fetchone()[0]
-    total = conn.execute("SELECT COUNT(*) FROM items WHERE status!='finalizado'").fetchone()[0]
-    waiting = conn.execute("SELECT COUNT(*) FROM items WHERE status='aguardando'").fetchone()[0]
-    repairing = conn.execute("SELECT COUNT(*) FROM items WHERE status='consertando'").fetchone()[0]
-    conn.close()
-    rows = [dict(i) | {'priority_label': priority(i['created_at'], i['urgency'])} for i in items]
-    return render_template_string(DASHBOARD_HTML, items=rows, total=total, waiting=waiting,
-                                  repairing=repairing, repaired=repaired, manager=manager,
-                                  user_name=session['name'], role=session['role'])
+    with Session() as db:
+        q=visible(db.query(Order)); total=q.count(); waiting=q.filter(Order.status=='aguardando').count(); repairing=q.filter(Order.status=='consertando').count(); finished=q.filter(Order.status=='finalizado').count(); orders=q.order_by(Order.created_at.desc()).limit(10).all(); urgent=sum(priority(o)=='urgente' for o in orders if o.status!='finalizado'); late=sum((datetime.now()-o.created_at).days>=7 for o in orders if o.status!='finalizado'); users=db.query(User).filter_by(active=True).all(); rank=[]
+        for u in users: rank.append((u,visible(db.query(Order)).filter(Order.responsible_id==u.id,Order.status=='finalizado').count()))
+        rank.sort(key=lambda x:x[1],reverse=True)
+        body=render_template_string(DASH, total=total,waiting=waiting,repairing=repairing,finished=finished,urgent=urgent,late=late,orders=orders,rank=rank[:5],priority=priority)
+    return page(body)
 
+@app.route('/ordens')
+@auth
+def orders():
+    with Session() as db: body=render_template_string(ORDERS,orders=visible(db.query(Order)).order_by(Order.created_at.desc()).all(),priority=priority)
+    return page(body)
+@app.route('/ordem/nova',methods=['GET','POST'])
+@auth
+def new_order():
+    with Session() as db:
+        if request.method=='POST':
+            f=request.files.get('photo'); data=f.read() if f and f.filename else None; name=f.filename if f and f.filename else None; num='OS-'+datetime.now().strftime('%Y%m%d%H%M%S')+'-'+secrets.token_hex(2).upper();o=Order(number=num,product=request.form['product'],client_sector=request.form.get('client_sector',''),problem=request.form.get('problem',''),priority=request.form.get('priority','normal'),responsible_id=int(request.form['responsible_id']) if request.form.get('responsible_id') else None,created_by=session['uid'],photo=data,photo_name=name);db.add(o);log(db,'CRIAR_OS',num);db.commit();flash('Ordem criada com sucesso.');return redirect(url_for('orders'))
+        us=db.query(User).filter_by(active=True).order_by(User.name).all();body=render_template_string(FORM,users=us)
+    return page(body)
+@app.route('/ordem/<int:oid>')
+@auth
+def detail(oid):
+    with Session() as db:
+        o=db.get(Order,oid)
+        if not o:abort(404)
+        if session['role']=='funcionario' and o.responsible_id not in (session['uid'],None) and o.created_by!=session['uid']:abort(403)
+        body=render_template_string(DETAIL,o=o,priority=priority)
+    return page(body)
+@app.route('/ordem/<int:oid>/iniciar',methods=['POST'])
+@auth
+def start(oid):
+    with Session() as db:
+        o=db.get(Order,oid)
+        if not o:abort(404)
+        if session['role']=='funcionario' and o.responsible_id not in (None,session['uid']):abort(403)
+        o.responsible_id=o.responsible_id or session['uid'];o.status='consertando';o.started_at=o.started_at or datetime.now();log(db,'INICIAR_OS',o.number);db.commit()
+    return redirect(url_for('detail',oid=oid))
+@app.route('/ordem/<int:oid>/finalizar',methods=['POST'])
+@auth
+def finish(oid):
+    with Session() as db:
+        o=db.get(Order,oid)
+        if not o:abort(404)
+        if session['role']=='funcionario' and o.responsible_id!=session['uid']:abort(403)
+        o.status='finalizado';o.finished_at=datetime.now();o.parts=request.form.get('parts','');o.notes=request.form.get('notes','');log(db,'FINALIZAR_OS',o.number);db.commit()
+    return redirect(url_for('detail',oid=oid))
+@app.route('/foto/<int:oid>')
+def photo(oid):
+    with Session() as db:
+        o=db.get(Order,oid)
+        if not o or not o.photo:abort(404)
+        return send_file(io.BytesIO(o.photo),download_name=o.photo_name or 'produto.jpg',mimetype='image/jpeg')
 
-@app.route('/item/novo', methods=['GET', 'POST'])
-@login_required
-def new_item():
-    if request.method == 'POST':
-        product = request.form.get('product_name', '').strip()
-        if not product:
-            flash('Informe o nome do produto.')
-            return redirect(url_for('new_item'))
-        photo_name = None
-        photo = request.files.get('photo')
-        if photo and photo.filename and photo.filename.rsplit('.', 1)[-1].lower() in ALLOWED_EXTENSIONS:
-            photo_name = secure_filename(f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{photo.filename}")
-            photo.save(os.path.join(UPLOAD_DIR, photo_name))
-        conn = db()
-        cur = conn.execute('''INSERT INTO items(product_name,description,photo,urgency,status,created_at,created_by)
-                              VALUES(?,?,?,?,?,?,?)''',
-                           (product, request.form.get('description'), photo_name,
-                            request.form.get('urgency', 'normal'), 'aguardando', now(), session['user_id']))
-        item_id = cur.lastrowid
-        conn.execute('INSERT INTO autosaves(item_id,user_id,content,saved_at) VALUES(?,?,?,?)',
-                     (item_id, session['user_id'], request.form.get('description', ''), now()))
-        conn.commit()
-        conn.close()
-        audit('CRIAR_ITEM', product)
-        flash('Item cadastrado e salvo automaticamente.')
-        return redirect(url_for('dashboard'))
-    return render_template_string(ITEM_HTML)
+@app.route('/usuarios',methods=['GET','POST'])
+@auth
+@manager
+def users():
+    with Session() as db:
+        if request.method=='POST':
+            role=request.form.get('role','funcionario')
+            if session['role']=='chefe' and role=='admin':abort(403)
+            u=User(name=request.form['name'],username=request.form['username'].strip().lower(),password_hash=generate_password_hash(request.form['password']),role=role)
+            try: db.add(u);log(db,'CRIAR_USUARIO',u.username);db.commit();flash('Usuário criado e salvo.')
+            except Exception: db.rollback();flash('Não foi possível criar. O login pode já existir.')
+        rows=db.query(User).order_by(User.name).all();body=render_template_string(USERS,users=rows)
+    return page(body)
+@app.route('/usuarios/<int:uid>/toggle',methods=['POST'])
+@auth
+@manager
+def toggle(uid):
+    with Session() as db:
+        u=db.get(User,uid)
+        if not u or u.id==session['uid']:abort(400)
+        if session['role']=='chefe' and u.role=='admin':abort(403)
+        u.active=not u.active;log(db,'ALTERAR_USUARIO',u.username);db.commit()
+    return redirect(url_for('users'))
+@app.route('/historico')
+@auth
+@manager
+def history():
+    with Session() as db:
+        logs=db.query(Audit).order_by(Audit.created_at.desc()).limit(500).all();names={u.id:u.name for u in db.query(User).all()};body=render_template_string(HISTORY,logs=logs,names=names)
+    return page(body)
 
-
-@app.route('/item/<int:item_id>/iniciar', methods=['POST'])
-@login_required
-def start_item(item_id):
-    conn = db()
-    item = conn.execute('SELECT * FROM items WHERE id=?', (item_id,)).fetchone()
-    manager = session['role'] in ('administrador', 'chefe')
-    if not item or (not manager and item['assigned_to'] not in (None, session['user_id']) and item['created_by'] != session['user_id']):
-        conn.close()
-        return 'Não autorizado', 403
-    conn.execute("UPDATE items SET status='consertando', started_at=COALESCE(started_at,?), assigned_to=COALESCE(assigned_to,?) WHERE id=?",
-                 (now(), session['user_id'], item_id))
-    conn.commit()
-    conn.close()
-    return redirect(url_for('dashboard'))
-
-
-@app.route('/item/<int:item_id>/finalizar', methods=['POST'])
-@login_required
-def finish_item(item_id):
-    conn = db()
-    item = conn.execute('SELECT * FROM items WHERE id=?', (item_id,)).fetchone()
-    manager = session['role'] in ('administrador', 'chefe')
-    if not item or (not manager and item['assigned_to'] != session['user_id']):
-        conn.close()
-        return 'Não autorizado', 403
-    conn.execute("UPDATE items SET status='finalizado', finished_at=?, notes=? WHERE id=?",
-                 (now(), request.form.get('notes', ''), item_id))
-    conn.commit()
-    conn.close()
-    return redirect(url_for('dashboard'))
-
-
-@app.route('/autosave/<int:item_id>', methods=['POST'])
-@login_required
-def autosave(item_id):
-    content = request.get_json(silent=True) or {}
-    conn = db()
-    item = conn.execute('SELECT * FROM items WHERE id=?', (item_id,)).fetchone()
-    if not item:
-        conn.close()
-        return {'ok': False}, 404
-    conn.execute('INSERT INTO autosaves(item_id,user_id,content,saved_at) VALUES(?,?,?,?)',
-                 (item_id, session['user_id'], content.get('content', ''), now()))
-    conn.commit()
-    conn.close()
-    return {'ok': True, 'saved_at': now()}
-
-
-@app.route('/relatorio')
-@login_required
-def report():
-    start = request.args.get('inicio', datetime.now().strftime('%Y-%m-01'))
-    end = request.args.get('fim', datetime.now().strftime('%Y-%m-%d'))
-    conn = db()
-    query = '''SELECT i.*, u.name assigned_name FROM items i
-               LEFT JOIN users u ON u.id=i.assigned_to
-               WHERE date(i.created_at) BETWEEN date(?) AND date(?)'''
-    params = [start, end]
-    if session['role'] == 'funcionario':
-        query += ' AND (i.assigned_to=? OR i.created_by=?)'
-        params += [session['user_id'], session['user_id']]
-    rows = conn.execute(query + ' ORDER BY i.created_at DESC', params).fetchall()
-    conn.close()
-    return render_template_string(REPORT_HTML, rows=rows, start=start, end=end)
-
-
+@app.route('/relatorios')
+@auth
+def reports():
+    with Session() as db: us=db.query(User).filter_by(active=True).order_by(User.name).all();body=render_template_string(REPORT_FILTER,users=us)
+    return page(body)
+def report_rows(db):
+    q=visible(db.query(Order));ini=request.args.get('inicio');fim=request.args.get('fim');uid=request.args.get('usuario');status=request.args.get('status');pri=request.args.get('prioridade')
+    if ini:q=q.filter(Order.created_at>=datetime.fromisoformat(ini))
+    if fim:q=q.filter(Order.created_at<datetime.fromisoformat(fim)+timedelta(days=1))
+    if uid and session['role']!='funcionario':q=q.filter(Order.responsible_id==int(uid))
+    if status:q=q.filter(Order.status==status)
+    if pri:q=q.filter(Order.priority==pri)
+    return q.order_by(Order.created_at.desc()).all()
+@app.route('/relatorio/visualizar')
+@auth
+def report_view():
+    with Session() as db: body=render_template_string(REPORT,rows=report_rows(db),priority=priority)
+    return page(body)
 @app.route('/relatorio/csv')
-@login_required
-def report_csv():
-    start = request.args.get('inicio', datetime.now().strftime('%Y-%m-01'))
-    end = request.args.get('fim', datetime.now().strftime('%Y-%m-%d'))
-    conn = db()
-    query = '''SELECT i.product_name,i.urgency,i.status,i.created_at,i.started_at,i.finished_at,
-               u.name assigned_name,i.notes FROM items i LEFT JOIN users u ON u.id=i.assigned_to
-               WHERE date(i.created_at) BETWEEN date(?) AND date(?)'''
-    params = [start, end]
-    if session['role'] == 'funcionario':
-        query += ' AND (i.assigned_to=? OR i.created_by=?)'
-        params += [session['user_id'], session['user_id']]
-    rows = conn.execute(query + ' ORDER BY i.created_at DESC', params).fetchall()
-    conn.close()
-    path = os.path.join(BASE_DIR, 'relatorio.csv')
-    with open(path, 'w', newline='', encoding='utf-8-sig') as f:
-        writer = csv.writer(f, delimiter=';')
-        writer.writerow(['Produto','Urgência','Status','Entrada','Início','Finalização','Responsável','Observações'])
-        writer.writerows([tuple(r) for r in rows])
-    return send_file(path, as_attachment=True, download_name=f'relatorio_{start}_{end}.csv')
+@auth
+def csv_report():
+    with Session() as db: rows=report_rows(db); names={u.id:u.name for u in db.query(User).all()}
+    out=io.StringIO();w=csv.writer(out,delimiter=';');w.writerow(['OS','Produto','Cliente/Setor','Prioridade','Status','Entrada','Início','Finalização','Responsável','Peças','Observações'])
+    for o in rows:w.writerow([o.number,o.product,o.client_sector,priority(o),o.status,o.created_at,o.started_at or '',o.finished_at or '',names.get(o.responsible_id,''),o.parts,o.notes])
+    return send_file(io.BytesIO(out.getvalue().encode('utf-8-sig')),as_attachment=True,download_name='relatorio_sakamoto.csv',mimetype='text/csv')
+@app.route('/relatorio/xlsx')
+@auth
+def xlsx_report():
+    from openpyxl import Workbook
+    with Session() as db: rows=report_rows(db);names={u.id:u.name for u in db.query(User).all()}
+    wb=Workbook();ws=wb.active;ws.title='Relatório';ws.append(['OS','Produto','Cliente/Setor','Prioridade','Status','Entrada','Início','Finalização','Responsável','Peças','Observações'])
+    for o in rows:ws.append([o.number,o.product,o.client_sector,priority(o),o.status,o.created_at,o.started_at or '',o.finished_at or '',names.get(o.responsible_id,''),o.parts,o.notes])
+    buf=io.BytesIO();wb.save(buf);buf.seek(0);return send_file(buf,as_attachment=True,download_name='relatorio_sakamoto.xlsx',mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+@app.route('/relatorio/pdf')
+@auth
+def pdf_report():
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import A4,landscape
+    with Session() as db: rows=report_rows(db);names={u.id:u.name for u in db.query(User).all()}
+    buf=io.BytesIO();c=canvas.Canvas(buf,pagesize=landscape(A4));w,h=landscape(A4);y=h-35;c.setFont('Helvetica-Bold',16);c.drawString(30,y,'SAKAMOTO — RELATÓRIO DE MANUTENÇÃO');y-=28;c.setFont('Helvetica',8)
+    for o in rows:
+        line=f'{o.number} | {o.product[:32]} | {priority(o)} | {o.status} | {o.created_at:%d/%m/%Y %H:%M} | {o.finished_at:%d/%m/%Y %H:%M}' if o.finished_at else f'{o.number} | {o.product[:32]} | {priority(o)} | {o.status} | {o.created_at:%d/%m/%Y %H:%M}'
+        c.drawString(30,y,line[:155]);y-=14
+        if y<35:c.showPage();y=h-35;c.setFont('Helvetica',8)
+    c.save();buf.seek(0);return send_file(buf,as_attachment=True,download_name='relatorio_sakamoto.pdf',mimetype='application/pdf')
 
+@app.errorhandler(403)
+def e403(e):return page('<div class="form"><h1>Acesso negado</h1><p>Seu perfil não possui permissão para esta área.</p></div>'),403
 
-LOGIN_HTML = '''<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Acesso</title>
-<style>body{font-family:Arial;background:#f3f4f6;display:grid;place-items:center;height:100vh}.box{background:white;padding:30px;border-radius:14px;width:340px;box-shadow:0 5px 25px #0001}input,button{width:100%;padding:11px;margin:7px 0;box-sizing:border-box}button{background:#111827;color:white;border:0;border-radius:8px}</style></head>
-<body><div class="box"><h2>Sistema de Manutenção</h2>{% for m in get_flashed_messages() %}<p>{{m}}</p>{% endfor %}<form method="post"><input name="username" placeholder="Usuário" autocomplete="username" required><input type="password" name="password" placeholder="Senha" autocomplete="current-password" required><button>Entrar</button></form></div></body></html>'''
+DASH='''<h1>Dashboard</h1><p class="muted">Visão geral da operação de manutenção.</p><div class="cards"><div class="card">Produtos pendentes<div class="num">{{total}}</div></div><div class="card">Aguardando<div class="num">{{waiting}}</div></div><div class="card">Em manutenção<div class="num">{{repairing}}</div></div><div class="card">Finalizados<div class="num">{{finished}}</div></div><div class="card">Urgentes<div class="num">{{urgent}}</div></div></div><div class="grid"><div class="panel"><h3>Ranking de produtividade</h3>{% for u,c in rank %}<p><b>{{u.name}}</b> <span class="muted">{{c}} serviços</span></p><div class="bar"><i style="width:{{min(c*10,100)}}%"></i></div>{% else %}<p class="muted">Ainda sem serviços finalizados.</p>{% endfor %}</div><div class="panel"><h3>Ordens recentes</h3><a class="btn primary" href="/ordem/nova">+ Nova ordem</a><a class="btn" href="/ordens">Ver todas</a><ul>{% for o in orders %}<li><a href="/ordem/{{o.id}}">{{o.number}} — {{o.product}}</a> · {{o.status}} · {{priority(o)}}</li>{% endfor %}</ul></div></div>'''
+ORDERS='''<h1>Ordens de serviço</h1><p><a class="btn primary" href="/ordem/nova">+ Nova ordem</a></p><div class="panel"><table><tr><th>OS</th><th>Produto</th><th>Prioridade</th><th>Status</th><th>Entrada</th><th></th></tr>{% for o in orders %}<tr><td>{{o.number}}</td><td>{{o.product}}</td><td><span class="tag {% if priority(o)=='urgente' %}urgent{% elif priority(o)=='pouca urgencia' %}warning{% endif %}">{{priority(o)}}</span></td><td>{{o.status}}</td><td>{{o.created_at.strftime('%d/%m/%Y %H:%M')}}</td><td><a class="btn" href="/ordem/{{o.id}}">Abrir</a></td></tr>{% endfor %}</table></div>'''
+FORM='''<h1>Nova ordem de serviço</h1><form class="form" method="post" enctype="multipart/form-data"><label>Produto<input name="product" required></label><label>Cliente / setor<input name="client_sector"></label><label>Problema informado<textarea name="problem" rows="5"></textarea></label><label>Prioridade<select name="priority"><option value="normal">Normal</option><option value="pouca urgencia">Pouca urgência</option><option value="urgente">Urgente</option></select></label><label>Funcionário responsável<select name="responsible_id"><option value="">A definir</option>{% for u in users %}<option value="{{u.id}}">{{u.name}} — {{roles[u.role]}}</option>{% endfor %}</select></label><label>Foto do produto<input type="file" name="photo" accept="image/*"></label><button class="btn primary">Cadastrar ordem</button></form>'''
+DETAIL='''<h1>{{o.number}} <span class="tag">{{o.status}}</span></h1><div class="grid"><div class="panel"><h2>{{o.product}}</h2><p><b>Prioridade:</b> {{priority(o)}}</p><p><b>Cliente/setor:</b> {{o.client_sector or '—'}}</p><p><b>Problema:</b><br>{{o.problem or '—'}}</p>{% if o.photo %}<img class="photo" src="/foto/{{o.id}}">{% endif %}<p class="muted">Entrada: {{o.created_at.strftime('%d/%m/%Y %H:%M')}}<br>Início: {{o.started_at.strftime('%d/%m/%Y %H:%M') if o.started_at else '—'}}<br>Finalização: {{o.finished_at.strftime('%d/%m/%Y %H:%M') if o.finished_at else '—'}}</p>{% if o.status!='finalizado' %}<form method="post" action="/ordem/{{o.id}}/iniciar"><button class="btn primary">Iniciar conserto</button></form>{% if o.status=='consertando' %}<form method="post" action="/ordem/{{o.id}}/finalizar"><label>Peças utilizadas<textarea name="parts"></textarea></label><label>Observações<textarea name="notes"></textarea></label><button class="btn primary">Finalizar ordem</button></form>{% endif %}{% endif %}</div></div>'''
+USERS='''<h1>Usuários e permissões</h1><form class="form" method="post"><h3>Criar usuário</h3><input name="name" placeholder="Nome completo" required><input name="username" placeholder="Login" required><input type="password" name="password" placeholder="Senha" minlength="6" required><select name="role"><option value="funcionario">Funcionário</option><option value="chefe">Chefe</option>{% if session['role']=='admin' %}<option value="admin">Administrador</option>{% endif %}</select><button class="btn primary">Criar usuário</button></form><div class="panel" style="margin-top:18px"><table><tr><th>Nome</th><th>Login</th><th>Perfil</th><th>Status</th><th></th></tr>{% for u in users %}<tr><td>{{u.name}}</td><td>{{u.username}}</td><td>{{roles[u.role]}}</td><td>{{'Ativo' if u.active else 'Desativado'}}</td><td>{% if u.id!=session['uid'] %}<form method="post" action="/usuarios/{{u.id}}/toggle"><button class="btn">{{'Desativar' if u.active else 'Ativar'}}</button></form>{% endif %}</td></tr>{% endfor %}</table></div>'''
+HISTORY='''<h1>Histórico de ações</h1><div class="panel"><table><tr><th>Data/hora</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr>{% for x in logs %}<tr><td>{{x.created_at.strftime('%d/%m/%Y %H:%M:%S')}}</td><td>{{names.get(x.user_id,'Sistema')}}</td><td>{{x.action}}</td><td>{{x.details}}</td></tr>{% endfor %}</table></div>'''
+REPORT_FILTER='''<h1>Relatórios</h1><form class="form" method="get" action="/relatorio/visualizar"><label>Data inicial<input type="date" name="inicio"></label><label>Data final<input type="date" name="fim"></label><label>Funcionário<select name="usuario"><option value="">Todos</option>{% for u in users %}<option value="{{u.id}}">{{u.name}}</option>{% endfor %}</select></label><label>Status<select name="status"><option value="">Todos</option><option>aguardando</option><option>consertando</option><option>finalizado</option></select></label><label>Prioridade<select name="prioridade"><option value="">Todas</option><option value="normal">Normal</option><option value="pouca urgencia">Pouca urgência</option><option value="urgente">Urgente</option></select></label><button class="btn primary">Gerar relatório</button></form>'''
+REPORT='''<h1>Relatório de manutenção</h1><div class="actions"><a class="btn" href="/relatorio/csv?{{request.query_string.decode()}}">CSV</a><a class="btn" href="/relatorio/xlsx?{{request.query_string.decode()}}">Excel</a><a class="btn" href="/relatorio/pdf?{{request.query_string.decode()}}">PDF</a><button class="btn" onclick="window.print()">Imprimir</button></div><div class="panel" style="margin-top:15px"><table><tr><th>OS</th><th>Produto</th><th>Prioridade</th><th>Status</th><th>Entrada</th><th>Início</th><th>Finalização</th></tr>{% for o in rows %}<tr><td>{{o.number}}</td><td>{{o.product}}</td><td>{{priority(o)}}</td><td>{{o.status}}</td><td>{{o.created_at.strftime('%d/%m/%Y %H:%M')}}</td><td>{{o.started_at.strftime('%d/%m/%Y %H:%M') if o.started_at else '—'}}</td><td>{{o.finished_at.strftime('%d/%m/%Y %H:%M') if o.finished_at else '—'}}</td></tr>{% endfor %}</table></div>'''
 
-USERS_HTML = '''<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Usuários</title>
-<style>body{font-family:Arial;background:#f6f7f9}.wrap{max-width:1000px;margin:30px auto}.box{background:white;padding:20px;border-radius:12px;margin-bottom:20px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}input,select,button{padding:10px;margin:5px;width:calc(100% - 20px);box-sizing:border-box}button{background:#111827;color:white;border:0;border-radius:7px}table{width:100%;border-collapse:collapse}td,th{padding:9px;border-bottom:1px solid #ddd}</style></head>
-<body><div class="wrap"><h2>Gerenciar usuários</h2>{% for m in get_flashed_messages() %}<div class="box">{{m}}</div>{% endfor %}<div class="grid"><div class="box"><h3>Criar usuário</h3><form method="post"><input name="name" placeholder="Nome completo" required><input name="username" placeholder="Login" required><input type="password" name="password" placeholder="Senha (mín. 6 caracteres)" required><select name="role"><option value="funcionario">Funcionário</option><option value="chefe">Chefe</option><option value="administrador">Administrador</option></select><button>Criar e salvar usuário</button></form></div>
-<div class="box"><h3>Usuários cadastrados</h3><table><tr><th>Nome</th><th>Login</th><th>Perfil</th><th>Status</th></tr>{% for u in users %}<tr><td>{{u.name}}</td><td>{{u.username}}</td><td>{{u.role}}</td><td>{{'Ativo' if u.active else 'Bloqueado'}}{% if u.id != session['user_id'] %}<form method="post" action="/usuarios/{{u.id}}/toggle"><button>{{'Bloquear' if u.active else 'Ativar'}}</button></form>{% endif %}</td></tr>{% endfor %}</table></div></div><p><a href="/usuarios/logins">Ver histórico de logins/criação</a> · <a href="/dashboard">Voltar ao dashboard</a></p></div></body></html>'''
-
-LOGS_HTML = '''<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Histórico</title><style>body{font-family:Arial;margin:30px}table{width:100%;border-collapse:collapse}th,td{padding:9px;border-bottom:1px solid #ddd;text-align:left}</style></head><body><h2>Histórico de acesso e ações</h2><table><tr><th>Data/Hora</th><th>Usuário</th><th>Ação</th><th>Login afetado</th></tr>{% for l in logs %}<tr><td>{{l.created_at}}</td><td>{{l.actor_name or 'Sistema'}}</td><td>{{l.action}}</td><td>{{l.target_username or '—'}}</td></tr>{% endfor %}</table><p><a href="/usuarios">Voltar</a></p></body></html>'''
-
-DASHBOARD_HTML = '''<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Dashboard</title><style>body{font-family:Arial;margin:0;background:#f6f7f9;color:#111827}.top{background:#111827;color:white;padding:16px 24px;display:flex;justify-content:space-between}.wrap{max-width:1200px;margin:25px auto;padding:0 15px}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:15px}.card{background:white;padding:20px;border-radius:12px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:15px;margin-top:20px}.item{background:white;padding:18px;border-radius:12px;border-left:6px solid #9ca3af}.urgente{border-left-color:#dc2626}.pouca\ urgência{border-left-color:#f59e0b}.btn{display:inline-block;padding:9px 12px;background:#111827;color:white;text-decoration:none;border-radius:7px;border:0;cursor:pointer}.tag{padding:4px 8px;border-radius:99px;background:#e5e7eb;font-size:12px}.muted{color:#6b7280}</style></head>
-<body><div class="top"><b>Sistema de Manutenção</b><span>{{user_name}} · {{role}} · <a style="color:white" href="/logout">Sair</a></span></div><div class="wrap"><p><a class="btn" href="/item/novo">+ Cadastrar item</a> <a class="btn" href="/relatorio">Relatórios</a>{% if manager %} <a class="btn" href="/usuarios">Usuários</a>{% endif %}</p><div class="cards"><div class="card"><b>{{total}}</b><br>Produtos para arrumar</div><div class="card"><b>{{waiting}}</b><br>Aguardando</div><div class="card"><b>{{repairing}}</b><br>Em conserto</div><div class="card"><b>{{repaired}}</b><br>Já arrumados</div></div><div class="grid">{% for i in items %}<div class="item {{i.priority_label}}"><h3>{{i.product_name}}</h3><p>{{i.description or ''}}</p><span class="tag">{{i.priority_label}}</span> <span class="tag">{{i.status}}</span><p class="muted">Entrada: {{i.created_at}}<br>Início: {{i.started_at or '—'}}<br>Finalização: {{i.finished_at or '—'}}<br>Responsável: {{i.assigned_name or 'Não atribuído'}}</p>{% if i.status != 'finalizado' %}<form method="post" action="/item/{{i.id}}/iniciar"><button class="btn">Iniciar</button></form>{% if i.status == 'consertando' %}<form method="post" action="/item/{{i.id}}/finalizar"><input name="notes" placeholder="Observação final"><button class="btn">Finalizar</button></form>{% endif %}{% endif %}</div>{% endfor %}</div></div></body></html>'''
-
-ITEM_HTML = '''<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Novo item</title><style>body{font-family:Arial;background:#f6f7f9}.box{max-width:650px;margin:35px auto;background:white;padding:25px;border-radius:14px}input,textarea,select,button{width:100%;padding:11px;margin:7px 0;box-sizing:border-box}button{background:#111827;color:white;border:0;border-radius:8px}</style></head><body><div class="box"><h2>Cadastrar item para manutenção</h2><form method="post" enctype="multipart/form-data"><input name="product_name" placeholder="Nome do produto" required><textarea name="description" placeholder="Problema / descrição" rows="6"></textarea><select name="urgency"><option>normal</option><option>pouca urgência</option><option>urgente</option></select><input type="file" name="photo" accept="image/*"><button>Salvar item</button></form><a href="/dashboard">Voltar</a></div></body></html>'''
-
-REPORT_HTML = '''<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Relatório</title><style>body{font-family:Arial;margin:25px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #ddd;text-align:left}button,a{padding:9px}</style></head><body><h2>Relatório de manutenção</h2><form><input type="date" name="inicio" value="{{start}}"><input type="date" name="fim" value="{{end}}"><button>Filtrar</button> <a href="/relatorio/csv?inicio={{start}}&fim={{end}}">Baixar CSV</a> <button type="button" onclick="window.print()">Imprimir</button></form><table><tr><th>Produto</th><th>Urgência</th><th>Status</th><th>Entrada</th><th>Início</th><th>Finalização</th><th>Responsável</th><th>Observações</th></tr>{% for r in rows %}<tr><td>{{r.product_name}}</td><td>{{r.urgency}}</td><td>{{r.status}}</td><td>{{r.created_at}}</td><td>{{r.started_at or '—'}}</td><td>{{r.finished_at or '—'}}</td><td>{{r.assigned_name or '—'}}</td><td>{{r.notes or ''}}</td></tr>{% endfor %}</table><p><a href="/dashboard">Voltar</a></p></body></html>'''
-
-init_db()
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
+app.jinja_env.globals['min']=min
+if __name__=='__main__': app.run(host='0.0.0.0',port=int(os.getenv('PORT',5000)),debug=False)
