@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500">
+<defs>
+  <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff04a"/><stop offset=".5" stop-color="#ffd000"/><stop offset="1" stop-color="#f2a900"/></linearGradient>
+  <linearGradient id="n" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#8cff38"/><stop offset=".5" stop-color="#39e000"/><stop offset="1" stop-color="#079b19"/></linearGradient>
+  <filter id="glow"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<rect width="500" height="500" rx="45" fill="#061406"/>
+<circle cx="250" cy="185" r="150" fill="#0b2b08"/>
+<g filter="url(#glow)">
+  <path d="M170 105h145l-40 45h-94c-15 0-22 8-22 18s8 17 23 17h67c36 0 57 20 57 51 0 32-23 54-60 54H110l40-45h92c14 0 22-7 22-18 0-10-8-17-23-17h-68c-36 0-57-20-57-51 0-32 23-54 54-54z" fill="url(#g)"/>
+  <path d="M295 118c-21 13-35 35-35 60 0 42 31 65 75 65h52v-43h-48c-17 0-28-9-28-24s11-24 28-24h65l36-43h-80c-26 0-49 3-65 9z" fill="url(#n)"/>
+  <g fill="none" stroke="#66ff22" stroke-width="7" stroke-linecap="round">
+    <path d="M360 128h55l25-24"/><path d="M370 154h55l24-1"/><path d="M370 181h55l24 18"/><path d="M360 208h55l25 26"/>
+  </g>
+  <g fill="#9aff55" stroke="#082a05" stroke-width="4"><circle cx="440" cy="104" r="11"/><circle cx="449" cy="153" r="11"/><circle cx="449" cy="199" r="11"/><circle cx="440" cy="234" r="11"/></g>
+  <path d="M83 177h48l15 63h88l19-52h-96" fill="none" stroke="url(#g)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="158" cy="258" r="10" fill="#ffd000"/><circle cx="225" cy="258" r="10" fill="#ffd000"/>
+</g>
+<text x="250" y="335" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="48" font-weight="900" letter-spacing="4" fill="url(#g)">SAKAMOTO</text>
+<text x="250" y="367" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="15" font-weight="700" letter-spacing="5" fill="#5cff1c">VARIEDADES E TECNOLOGIA</text>
+<path d="M75 395h350" stroke="#61ff18" stroke-width="2" opacity=".7"/>
+<text x="250" y="425" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="12" letter-spacing="2" fill="#d7e7d0">SISTEMA DE MANUTENÇÃO</text>
+</svg>
