@@ -1,25 +1,19 @@
 # Sakamoto — Manutenção
 
-## Versão 0.5
+## Versão 1.0
 
-**Status:** versão de referência do projeto.
+**Status:** versão principal do sistema.
 
-### Incluído nesta versão
-- Login profissional.
-- Criação da primeira conta diretamente pelo menu de login.
-- Primeiro usuário recebe o cargo de Administrador.
-- Perfis: Administrador, Chefe e Funcionário.
-- Painel/dashboard profissional.
-- Menu lateral de Dashboard, Ordens de serviço, Produtos, Usuários, Relatórios, Histórico e Configurações.
-- Atribuição de serviços por Administrador e Chefe.
-- Funcionário visualiza e abre somente os serviços atribuídos a ele.
-- Cadastro de produtos pelo painel.
-- Abertura de cada ordem de serviço.
-- Início e finalização do serviço com data e hora.
-- Relatório na tela com opção de impressão.
-- Download de relatório em PDF e CSV.
-- Controle de permissões por cargo.
-- PostgreSQL/Render preparado para produção.
-- Endpoint de status para verificar aplicação, banco, usuários, serviços e produtos.
+### Funcionalidades
+- Login profissional e criação da primeira conta Administrador.
+- Perfis Administrador, Chefe e Funcionário.
+- Dashboard e menu empresarial.
+- Usuários e permissões.
+- Ordens de serviço e atribuição de trabalhos.
+- Cadastro de produtos.
+- Prioridades e acompanhamento de serviços.
+- Relatórios e histórico.
+- Preparação para PostgreSQL/Render.
+- Base preparada para imagens em produtos e ordens de serviço.
 
-Esta versão deve ser tratada como o ponto de partida para as próximas alterações do Sistema Sakamoto.
+A versão 1.0 é o marco oficial para as próximas evoluções do Sistema Sakamoto.
