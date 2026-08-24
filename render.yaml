@@ -3,7 +3,7 @@ services:
     name: sistema-manutencao-sakamoto
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: python patch_login.py && gunicorn app:app
     healthCheckPath: /login
     envVars:
       - key: SECRET_KEY
