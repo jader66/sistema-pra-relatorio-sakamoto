@@ -15,6 +15,7 @@ def save(d,t,oid,files):
 def remove(name):
     for r in list(app.url_map.iter_rules()):
         if r.endpoint==name:app.url_map._rules.remove(r);app.url_map._rules_by_endpoint.pop(name,None)
+    app.view_functions.pop(name,None)
 for x in ('produtos','novo_servico','servico_detalhe'):remove(x)
 @app.route('/produtos',methods=['GET','POST'],endpoint='produtos')
 @auth
