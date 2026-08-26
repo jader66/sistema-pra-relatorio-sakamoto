@@ -3,8 +3,8 @@ services:
     name: sistema-manutencao-sakamoto
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
-    healthCheckPath: /status
+    startCommand: gunicorn --bind 0.0.0.0:${PORT:-10000} app:app
+    healthCheckPath: /
     autoDeploy: true
     envVars:
       - key: SECRET_KEY
