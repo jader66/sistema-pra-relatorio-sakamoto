@@ -1,0 +1,57 @@
+name: Corrigir relatório
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Atualizar relatório e finalização
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('app.py')
+          s=p.read_text(encoding='utf-8')
+
+          # Tela da OS: exibir cliente, o que foi feito e observação.
+          s=s.replace('<p><b>Observações:</b> {{s.notes or \'-\'}}</p>', '<p><b>Cliente:</b> {{s.client or \'-\'}}</p><p><b>O que foi feito:</b> {{s.work_done or \'-\'}}</p><p><b>Observação da finalização:</b> {{s.notes or \'-\'}}</p>')
+          s=s.replace('<div class="field"><label>OBSERVAÇÕES FINAIS</label><textarea name="notes" rows="5"></textarea></div><button class="btn full">✓ Finalizar serviço</button>', '<div class="field"><label>O QUE FOI FEITO</label><textarea name="work_done" rows="5" required placeholder="Descreva o serviço realizado..."></textarea></div><div class="field"><label>OBSERVAÇÃO DA FINALIZAÇÃO</label><textarea name="notes" rows="5" placeholder="Observações finais..."></textarea></div><button class="btn full">✓ Finalizar serviço</button>')
+
+          # Relatório na tela.
+          old='<tr><th>OS</th><th>Produto</th><th>Responsável</th><th>Prioridade</th><th>Início</th><th>Finalização</th><th>Status</th></tr>'
+          new='<tr><th>OS</th><th>Cliente</th><th>Produto</th><th>O que foi feito</th><th>Observação</th><th>Responsável</th><th>Prioridade</th><th>Início</th><th>Finalização</th><th>Status</th></tr>'
+          s=s.replace(old,new)
+          old='<tr><td>OS-{{\'%05d\'%s.id}}</td><td>{{s.product_id}}</td><td>{% for u in users if u.id==s.responsible_id %}{{u.name}}{% endfor %}</td><td>{{priority_for(s)}}</td><td>{{s.started_at.strftime(\'%d/%m/%Y %H:%M\') if s.started_at else \'-\'}}</td><td>{{s.finished_at.strftime(\'%d/%m/%Y %H:%M\') if s.finished_at else \'-\'}}</td><td>{{s.status}}</td></tr>'
+          new='<tr><td>OS-{{\'%05d\'%s.id}}</td><td>{{s.client or \'-\'}}</td><td>{{product_names.get(s.product_id, \'Sem produto\')}}</td><td>{{s.work_done or \'-\'}}</td><td>{{s.notes or \'-\'}}</td><td>{% for u in users if u.id==s.responsible_id %}{{u.name}}{% endfor %}</td><td>{{priority_for(s)}}</td><td>{{s.started_at.strftime(\'%d/%m/%Y %H:%M\') if s.started_at else \'-\'}}</td><td>{{s.finished_at.strftime(\'%d/%m/%Y %H:%M\') if s.finished_at else \'-\'}}</td><td>{{s.status}}</td></tr>'
+          s=s.replace(old,new)
+          s=s.replace("services=q.order_by(Service.created_at.desc()).all();users=d.query(User).order_by(User.name).all()\n    return shell('''<h1>Relatórios</h1>", "services=q.order_by(Service.created_at.desc()).all();users=d.query(User).order_by(User.name).all();product_names={p.id:p.name for p in d.query(Product).all()}\n    return shell('''<h1>Relatórios</h1>")
+          s=s.replace("services=services,users=users,priority_for=priority_for)", "services=services,users=users,product_names=product_names,priority_for=priority_for)", 1)
+
+          # CSV.
+          s=s.replace("['OS','Produto','Patrimônio','Setor','Prioridade','Status','Responsável','Entrada','Início','Finalização','Observações']", "['OS','Cliente','Produto','Patrimônio','Setor','Prioridade','Status','Responsável','Entrada','Início','Finalização','O que foi feito','Observação da finalização']")
+          s=s.replace("[f'OS-{s.id:05d}',p.name if p else '',p.code if p else '',p.sector if p else '',priority_for(s),s.status,u.name if u else '',s.created_at.strftime('%d/%m/%Y %H:%M'),s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '',s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '',s.notes]", "[f'OS-{s.id:05d}',s.client,p.name if p else 'Sem produto',p.code if p else '',p.sector if p else '',priority_for(s),s.status,u.name if u else '',s.created_at.strftime('%d/%m/%Y %H:%M'),s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '',s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '',s.work_done,s.notes]")
+
+          # PDF: incluir cliente, produto e observação.
+          old="c.drawString(40,y,f'OS-{s.id:05d} | {p.name if p else \"-\"} | {priority_for(s)} | {s.status}');y-=14;c.drawString(55,y,f'Entrada: {s.created_at.strftime(\"%d/%m/%Y %H:%M\")} | Início: {s.started_at.strftime(\"%d/%m/%Y %H:%M\") if s.started_at else \"-\"} | Final: {s.finished_at.strftime(\"%d/%m/%Y %H:%M\") if s.finished_at else \"-\"}');y-=18"
+          new="c.drawString(40,y,f'OS-{s.id:05d} | Cliente: {s.client or \"-\"}');y-=13;c.drawString(55,y,f'Produto: {p.name if p else \"Sem produto\"} | Prioridade: {priority_for(s)} | Status: {s.status}');y-=13;c.drawString(55,y,f'Entrada: {s.created_at.strftime(\"%d/%m/%Y %H:%M\")} | Início: {s.started_at.strftime(\"%d/%m/%Y %H:%M\") if s.started_at else \"-\"} | Final: {s.finished_at.strftime(\"%d/%m/%Y %H:%M\") if s.finished_at else \"-\"}');y-=13;c.drawString(55,y,f'O que foi feito: {(s.work_done or \"-\")[:100]}');y-=13;c.drawString(55,y,f'Observação: {(s.notes or \"-\")[:100]}');y-=18"
+          s=s.replace(old,new)
+
+          p.write_text(s,encoding='utf-8')
+          PY
+          python -m py_compile app.py
+      - name: Publicar
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app.py
+          git diff --cached --quiet || git commit -m "fix: relatório mostra cliente produto e observação"
+          git push
+      - name: Remover workflow temporário
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/fix-report.yml || true
+          git commit -m "chore: remover workflow temporário" || true
+          git push || true
