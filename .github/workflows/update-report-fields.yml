@@ -1,0 +1,136 @@
+name: Atualizar relatório de manutenção
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Atualizar app.py
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('app.py')
+          source = path.read_text(encoding='utf-8')
+
+          # 1) Campo para registrar o que foi feito na manutenção.
+          old = "notes:Mapped[str]=mapped_column(Text,default='')"
+          new = "work_done:Mapped[str]=mapped_column(Text,default=''); notes:Mapped[str]=mapped_column(Text,default='')"
+          if old in source and 'work_done:Mapped[str]' not in source:
+              source = source.replace(old, new, 1)
+
+          # 2) Persistência da nova coluna no PostgreSQL/SQLite.
+          old = "if 'product_id' not in scols: c.execute(text(\"ALTER TABLE services ADD COLUMN product_id INTEGER\"))"
+          new = "if 'product_id' not in scols: c.execute(text(\"ALTER TABLE services ADD COLUMN product_id INTEGER\"))\n            if 'work_done' not in scols: c.execute(text(\"ALTER TABLE services ADD COLUMN work_done TEXT DEFAULT ''\"))"
+          if old in source and "'work_done' not in scols" not in source:
+              source = source.replace(old, new, 1)
+
+          old = "c.execute(text(\"ALTER TABLE services ADD COLUMN IF NOT EXISTS product_id INTEGER\"))"
+          new = "c.execute(text(\"ALTER TABLE services ADD COLUMN IF NOT EXISTS product_id INTEGER\"))\n            c.execute(text(\"ALTER TABLE services ADD COLUMN IF NOT EXISTS work_done TEXT DEFAULT ''\"))"
+          if old in source and "IF NOT EXISTS work_done" not in source:
+              source = source.replace(old, new, 1)
+
+          # 3) Inicializar o banco somente no boot, nunca em cada requisição.
+          old_startup = "@app.before_request\ndef startup():\n    try:init_db()\n    except Exception:pass\n"
+          new_startup = "# Initialize the database once when the worker starts.\ntry:\n    init_db()\nexcept Exception:\n    app.logger.exception('Database initialization failed during startup')\n"
+          if old_startup in source:
+              source = source.replace(old_startup, new_startup, 1)
+
+          # 4) Ao finalizar, salvar separadamente o que foi feito e a observação final.
+          old_finish = "s.finished_at=datetime.utcnow();s.status='Finalizado';s.notes=request.form.get('notes','');log(d,'FINALIZAR_SERVICO',f'OS-{s.id}')"
+          new_finish = "s.finished_at=datetime.utcnow();s.status='Finalizado';s.work_done=request.form.get('work_done','').strip();s.notes=request.form.get('notes','').strip();log(d,'FINALIZAR_SERVICO',f'OS-{s.id}')"
+          if old_finish in source:
+              source = source.replace(old_finish, new_finish, 1)
+
+          # 5) Formulário de finalização.
+          old_form = "<div class=\"field\"><label>OBSERVAÇÕES FINAIS</label><textarea name=\"notes\" rows=\"5\"></textarea></div><button class=\"btn full\">✓ Finalizar serviço</button>"
+          new_form = "<div class=\"field\"><label>O QUE FOI FEITO</label><textarea name=\"work_done\" rows=\"4\" placeholder=\"Descreva o serviço realizado...\" required></textarea></div><div class=\"field\"><label>OBSERVAÇÃO DA FINALIZAÇÃO</label><textarea name=\"notes\" rows=\"4\" placeholder=\"Observações finais...\"></textarea></div><button class=\"btn full\">✓ Finalizar serviço</button>"
+          if old_form in source:
+              source = source.replace(old_form, new_form, 1)
+
+          # 6) Mostrar os dados também na tela da OS.
+          old_view = "<p><b>Observações:</b> {{s.notes or '-'}}</p>"
+          new_view = "<p><b>O que foi feito:</b> {{s.work_done or '-'}}</p><p><b>Observação da finalização:</b> {{s.notes or '-'}}</p>"
+          if old_view in source:
+              source = source.replace(old_view, new_view, 1)
+
+          # 7) Tabela da página de relatórios.
+          old_header = "<tr><th>OS</th><th>Produto</th><th>Responsável</th><th>Prioridade</th><th>Início</th><th>Finalização</th><th>Status</th></tr>"
+          new_header = "<tr><th>OS</th><th>Cliente</th><th>Produto</th><th>Responsável</th><th>Prioridade</th><th>O que foi feito</th><th>Observação final</th><th>Início</th><th>Finalização</th><th>Status</th></tr>"
+          if old_header in source:
+              source = source.replace(old_header, new_header, 1)
+
+          old_row = "<tr><td>OS-{{'%05d'%s.id}}</td><td>{{s.product_id}}</td><td>{% for u in users if u.id==s.responsible_id %}{{u.name}}{% endfor %}</td><td>{{priority_for(s)}}</td><td>{{s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '-'}}</td><td>{{s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '-'}}</td><td>{{s.status}}</td></tr>"
+          new_row = "<tr><td>OS-{{'%05d'%s.id}}</td><td>{{s.client or '-'}}</td><td>{% if s.product_id %}{{s.product_id}}{% else %}Sem produto{% endif %}</td><td>{% for u in users if u.id==s.responsible_id %}{{u.name}}{% endfor %}</td><td>{{priority_for(s)}}</td><td>{{s.work_done or '-'}}</td><td>{{s.notes or '-'}}</td><td>{{s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '-'}}</td><td>{{s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '-'}}</td><td>{{s.status}}</td></tr>"
+          if old_row in source:
+              source = source.replace(old_row, new_row, 1)
+
+          # 8) CSV e Excel.
+          old_cols = "['OS','Produto','Patrimônio','Setor','Prioridade','Status','Responsável','Entrada','Início','Finalização','Observações']"
+          new_cols = "['OS','Cliente','Produto','Patrimônio','Setor','Prioridade','Status','Responsável','Entrada','Início','Finalização','O que foi feito','Observação da finalização']"
+          source = source.replace(old_cols, new_cols, 2)
+
+          old_values = "[f'OS-{s.id:05d}',p.name if p else '',p.code if p else '',p.sector if p else '',priority_for(s),s.status,u.name if u else '',s.created_at.strftime('%d/%m/%Y %H:%M'),s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '',s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '',s.notes]"
+          new_values = "[f'OS-{s.id:05d}',s.client,p.name if p else '',p.code if p else '',p.sector if p else '',priority_for(s),s.status,u.name if u else '',s.created_at.strftime('%d/%m/%Y %H:%M'),s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '',s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '',s.work_done,s.notes]"
+          source = source.replace(old_values, new_values, 2)
+
+          # 9) PDF completo com cliente, serviço realizado e observação final.
+          start = source.index("@app.get('/relatorios/pdf')")
+          end = source.index("@app.get('/historico')", start)
+          pdf_func = '''@app.get('/relatorios/pdf')
+          @auth
+          def relatorio_pdf():
+              rows=report_rows();buf=io.BytesIO();c=canvas.Canvas(buf,pagesize=A4);w,h=A4;y=h-45
+              c.setFont('Helvetica-Bold',16);c.drawString(40,y,'SAKAMOTO — RELATÓRIO DE MANUTENÇÃO');y-=22
+              c.setFont('Helvetica',9);c.drawString(40,y,'Gerado em '+datetime.now().strftime('%d/%m/%Y %H:%M'));y-=25
+              def line(label,value,indent=55):
+                  nonlocal y
+                  text_value=str(value or '-')
+                  max_chars=88
+                  chunks=[text_value[i:i+max_chars] for i in range(0,len(text_value),max_chars)] or ['-']
+                  for i,ch in enumerate(chunks):
+                      c.drawString(indent,y,(label if i==0 else ' '*18)+ch);y-=12
+              for s,p,u in rows:
+                  c.setFont('Helvetica-Bold',10);c.drawString(40,y,f'OS-{s.id:05d} | {s.status} | {priority_for(s)}');y-=15;c.setFont('Helvetica',9)
+                  line('Cliente: ',s.client)
+                  line('Produto: ',p.name if p else 'Sem produto')
+                  line('Responsável: ',u.name if u else '-')
+                  line('Entrada: ',s.created_at.strftime('%d/%m/%Y %H:%M'))
+                  line('Início: ',s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '-')
+                  line('Finalização: ',s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '-')
+                  line('O que foi feito: ',s.work_done)
+                  line('Observação final: ',s.notes)
+                  y-=10
+                  if y<75:
+                      c.showPage();y=h-45;c.setFont('Helvetica',9)
+              c.save();buf.seek(0);return send_file(buf,as_attachment=True,download_name='relatorio_sakamoto.pdf',mimetype='application/pdf')
+          
+          '''
+          source = source[:start] + pdf_func + source[end:]
+
+          path.write_text(source, encoding='utf-8')
+          PY
+
+      - name: Verificar sintaxe
+        run: python -m py_compile app.py
+
+      - name: Remover workflow temporário e publicar
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/update-report-fields.yml
+          git add app.py .github/workflows/update-report-fields.yml
+          git diff --cached --quiet && exit 0
+          git commit -m "feat: relatório com cliente serviço realizado e observação final"
+          git push
