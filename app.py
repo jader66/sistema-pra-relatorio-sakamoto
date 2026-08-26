@@ -52,17 +52,6 @@ def init_db():
             c.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS priority VARCHAR(30) DEFAULT 'Normal'"))
             c.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS product_id INTEGER"))
             c.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS work_done TEXT DEFAULT ''"))
-    with SessionLocal() as d:
-        try:
-            rows=d.execute(text("SELECT id, product FROM services WHERE product_id IS NULL AND product IS NOT NULL AND product <> ''")).fetchall()
-            for sid,pname in rows:
-                p=d.query(Product).filter(func.lower(Product.name)==pname.lower()).first()
-                if not p:
-                    p=Product(name=pname);d.add(p);d.flush()
-                d.execute(text("UPDATE services SET product_id=:pid WHERE id=:sid"),{'pid':p.id,'sid':sid})
-            d.commit()
-        except Exception:
-            d.rollback()
 
 def db(): return SessionLocal()
 def log(d,action,details=''): d.add(Audit(user_id=session.get('uid'),action=action,details=details))
@@ -94,26 +83,9 @@ def add_photos(d,files,product_id=None,service_id=None):
         d.add(Photo(product_id=product_id,service_id=service_id,filename=f.filename[:255],mime=f.mimetype,data=data));count+=1
     return count
 
-# Keep the health endpoint independent from the database. This prevents a slow/unavailable
-# PostgreSQL connection from making Gunicorn fail health checks with a 502.
-_db_ready=False
 @app.get('/status')
 def status():
-    return {'status':'ok','service':'sistema-manutencao-sakamoto'},200
-
-@app.before_request
-def ensure_database():
-    global _db_ready
-    if request.path == '/status':
-        return None
-    if not _db_ready:
-        try:
-            init_db()
-            _db_ready=True
-        except Exception:
-            app.logger.exception('Database initialization failed')
-            return ('Banco de dados indisponível. Verifique DATABASE_URL no Render.',503)
-    return None
+    return {'status': 'ok', 'service': 'sistema-manutencao-sakamoto'}, 200
 
 STYLE='''<style>*{box-sizing:border-box}body{margin:0;background:#061006;color:#eef7ed;font-family:Inter,Arial,sans-serif}.login{min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 50% 10%,#123d14,#061006 55%)}.box{width:min(470px,94vw);padding:34px;border:1px solid #20e84a;border-radius:24px;background:#071307ee;box-shadow:0 20px 80px #0008}.logo{text-align:center;font-size:42px;font-weight:950}.logo b,.brand b{color:#53ff20}.sub{text-align:center;color:#69ff36;font-size:11px;letter-spacing:3px;margin:6px 0 28px}.field{margin:12px 0}.field label{display:block;font-size:11px;color:#9eae9a;margin-bottom:7px}input,select,textarea{width:100%;padding:13px;border:1px solid #315936;border-radius:10px;background:#081408;color:#fff}.btn{display:inline-block;border:0;border-radius:10px;padding:12px 17px;background:#ffd21a;color:#111;font-weight:900;text-decoration:none;cursor:pointer}.green{background:#35ed24}.full{width:100%}.link{display:block;text-align:center;margin-top:17px;color:#72ff4b;text-decoration:none}.flash{background:#542323;padding:11px;border-radius:9px}.app{display:flex;min-height:100vh}.side{width:245px;background:#0a150a;border-right:1px solid #1e351f;padding:20px 13px;position:fixed;inset:0 auto 0 0}.brand{padding:10px 14px;font-size:27px;font-weight:950;color:#fff}.brand small{display:block;color:#68ff3a;font-size:8px;letter-spacing:2px}.nav{margin-top:22px}.nav a{display:block;padding:13px 14px;margin:4px 0;color:#b7c4b5;text-decoration:none;border-radius:10px}.nav a:hover{background:#172619;color:#fff}.main{margin-left:245px;flex:1}.top{height:72px;border-bottom:1px solid #1d331e;display:flex;justify-content:flex-end;align-items:center;gap:18px;padding:0 28px}.content{padding:28px;max-width:1500px;margin:auto}.muted{color:#8e9f8c}.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin:24px 0}.card,.panel{background:#0c190c;border:1px solid #203b21;border-radius:16px;padding:20px}.num{font-size:31px;font-weight:900}.label{font-size:13px;color:#99a996;margin-top:5px}.grid{display:grid;grid-template-columns:2fr 1fr;gap:18px}.form{display:grid;grid-template-columns:1fr 1fr;gap:14px}.fullcol{grid-column:1/-1}.table{width:100%;border-collapse:collapse}.table th,.table td{padding:12px;border-bottom:1px solid #203620;text-align:left}.badge{display:inline-block;padding:5px 9px;border-radius:99px;background:#1d381e;font-size:11px}.actions{display:flex;gap:8px;flex-wrap:wrap}.photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.photos img{width:100%;height:150px;object-fit:cover;border-radius:12px;border:1px solid #315936}@media(max-width:850px){.side{width:72px}.brand{font-size:0}.brand:before{content:'S';font-size:28px}.brand small,.nav span{display:none}.main{margin-left:72px}.cards{grid-template-columns:1fr 1fr}.grid,.form{grid-template-columns:1fr}}
 </style>'''
