@@ -1,0 +1,92 @@
+name: Restaurar e corrigir aplicação
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restaurar app completo do commit estável
+        run: |
+          git checkout c64f80a537b111f5799785a2c797b859840ec28c -- app.py
+
+      - name: Corrigir inicialização do banco
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('app.py')
+          s = p.read_text(encoding='utf-8')
+
+          # Remove a migração legada que consulta services.product.
+          s = re.sub(
+              r"\n    with SessionLocal\(\) as d:\n        try:\n            rows=d\.execute\(text\(\"SELECT id, product FROM services.*?\n            d\.rollback\(\)\n",
+              "\n",
+              s,
+              flags=re.S,
+          )
+
+          # Remove inicialização por requisição; o banco deve ser preparado uma vez.
+          s = re.sub(
+              r"\n# Keep the health endpoint independent.*?\n@app\.before_request\ndef ensure_database\(\):.*?\n    return None\n",
+              "\n",
+              s,
+              flags=re.S,
+          )
+
+          s = re.sub(
+              r"\n_db_ready=False\n@app\.get\('/status'\)",
+              "\n@app.get('/status')",
+              s,
+          )
+
+          # Inicializa o schema uma vez quando o módulo Flask é carregado pelo Gunicorn.
+          marker = "\ndef db(): return SessionLocal()\n"
+          boot = "\n# Database schema is initialized once per Gunicorn worker, never per request.\ntry:\n    init_db()\nexcept Exception:\n    app.logger.exception('Database initialization failed during startup')\n\n"
+          if boot.strip() not in s:
+              s = s.replace(marker, boot + "def db(): return SessionLocal()\n", 1)
+
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Validar aplicação
+        run: |
+          python -m py_compile app.py
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          tree = ast.parse(Path('app.py').read_text(encoding='utf-8'))
+          routes = []
+          for node in tree.body:
+              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                  for dec in node.decorator_list:
+                      if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute) and dec.func.attr in {'route','get','post','put','delete'}:
+                          for arg in dec.args[:1]:
+                              if isinstance(arg, ast.Constant): routes.append(arg.value)
+          required = {'/dashboard','/servicos','/produtos','/relatorios'}
+          missing = required - set(routes)
+          if missing:
+              raise SystemExit(f'Rotas essenciais ausentes: {sorted(missing)}')
+          print('Rotas essenciais:', sorted(required))
+          PY
+
+      - name: Publicar correção e remover workflow temporário
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/restore-and-fix-app.yml
+          git add app.py .github/workflows/restore-and-fix-app.yml
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: restaurar rotas e corrigir inicializacao do banco"
+          git push
