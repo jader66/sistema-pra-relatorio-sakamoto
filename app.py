@@ -24,7 +24,7 @@ class Product(Base):
     id:Mapped[int]=mapped_column(primary_key=True); name:Mapped[str]=mapped_column(String(160)); code:Mapped[str]=mapped_column(String(80),default=''); sector:Mapped[str]=mapped_column(String(160),default=''); description:Mapped[str]=mapped_column(Text,default=''); priority:Mapped[str]=mapped_column(String(30),default='Normal'); created_at:Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow)
 class Service(Base):
     __tablename__='services'
-    id:Mapped[int]=mapped_column(primary_key=True); product_id:Mapped[int|None]=mapped_column(ForeignKey('products.id'),nullable=True); client:Mapped[str]=mapped_column(String(160),default=''); problem:Mapped[str]=mapped_column(Text,default=''); priority:Mapped[str]=mapped_column(String(30),default='Normal'); status:Mapped[str]=mapped_column(String(30),default='Pendente'); responsible_id:Mapped[int|None]=mapped_column(ForeignKey('users.id'),nullable=True); created_by:Mapped[int]=mapped_column(ForeignKey('users.id')); created_at:Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow); started_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True); finished_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True); notes:Mapped[str]=mapped_column(Text,default='')
+    id:Mapped[int]=mapped_column(primary_key=True); product_id:Mapped[int|None]=mapped_column(ForeignKey('products.id'),nullable=True); client:Mapped[str]=mapped_column(String(160),default=''); problem:Mapped[str]=mapped_column(Text,default=''); priority:Mapped[str]=mapped_column(String(30),default='Normal'); status:Mapped[str]=mapped_column(String(30),default='Pendente'); responsible_id:Mapped[int|None]=mapped_column(ForeignKey('users.id'),nullable=True); created_by:Mapped[int]=mapped_column(ForeignKey('users.id')); created_at:Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow); started_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True); finished_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True); work_done:Mapped[str]=mapped_column(Text,default=''); notes:Mapped[str]=mapped_column(Text,default='')
 class Photo(Base):
     __tablename__='photos'
     id:Mapped[int]=mapped_column(primary_key=True); product_id:Mapped[int|None]=mapped_column(ForeignKey('products.id'),nullable=True); service_id:Mapped[int|None]=mapped_column(ForeignKey('services.id'),nullable=True); filename:Mapped[str]=mapped_column(String(255)); mime:Mapped[str]=mapped_column(String(80)); data:Mapped[bytes]=mapped_column(LargeBinary); created_at:Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow)
@@ -47,9 +47,11 @@ def init_db():
             scols={r[1] for r in c.execute(text('PRAGMA table_info(services)')).fetchall()}
             if 'priority' not in pcols: c.execute(text("ALTER TABLE products ADD COLUMN priority VARCHAR(30) DEFAULT 'Normal'"))
             if 'product_id' not in scols: c.execute(text("ALTER TABLE services ADD COLUMN product_id INTEGER"))
+            if 'work_done' not in scols: c.execute(text("ALTER TABLE services ADD COLUMN work_done TEXT DEFAULT ''"))
         else:
             c.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS priority VARCHAR(30) DEFAULT 'Normal'"))
             c.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS product_id INTEGER"))
+            c.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS work_done TEXT DEFAULT ''"))
     with SessionLocal() as d:
         # Migra ordens antigas que guardavam apenas o nome do produto.
         try:
@@ -101,10 +103,11 @@ def login_html(create=False):
 def shell(content,**ctx):
     return render_template_string(f'''<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Sakamoto | Manutenção</title>{STYLE}</head><body><div class="app"><aside class="side"><div class="brand"><b>SAKA</b>MOTO<small>MANUTENÇÃO</small></div><nav class="nav"><a href="/dashboard">📊 <span>Dashboard</span></a><a href="/servicos">🛠️ <span>Ordens de serviço</span></a><a href="/produtos">📦 <span>Produtos</span></a>{{% if session.role in ['admin','chefe'] %}}<a href="/usuarios">👥 <span>Funcionários</span></a>{{% endif %}}<a href="/relatorios">📄 <span>Relatórios</span></a><a href="/historico">🕘 <span>Histórico</span></a><a href="/configuracoes">⚙️ <span>Configurações</span></a></nav></aside><main class="main"><header class="top"><span>🔔</span><b>{{{{session.name}}}}</b><span class="badge">{{{{roles[session.role]}}}}</span><a class="btn" href="/logout">Sair</a></header><section class="content">{content}</section></main></div></body></html>''',roles=ROLES,**ctx)
 
-@app.before_request
-def startup():
-    try:init_db()
-    except Exception:pass
+# Initialize the database once when the worker starts.
+try:
+    init_db()
+except Exception:
+    app.logger.exception('Database initialization failed during startup')
 @app.get('/')
 def index(): return redirect('/login')
 @app.route('/login',methods=['GET','POST'])
@@ -235,11 +238,11 @@ def servico_detalhe(sid):
         if request.method=='POST':
             action=request.form.get('action')
             if action=='start' and s.started_at is None: s.started_at=datetime.utcnow();s.status='Em andamento';log(d,'INICIAR_SERVICO',f'OS-{s.id}')
-            elif action=='finish' and s.status!='Finalizado': s.finished_at=datetime.utcnow();s.status='Finalizado';s.notes=request.form.get('notes','');log(d,'FINALIZAR_SERVICO',f'OS-{s.id}')
+            elif action=='finish' and s.status!='Finalizado': s.finished_at=datetime.utcnow();s.status='Finalizado';s.work_done=request.form.get('work_done','').strip();s.notes=request.form.get('notes','').strip();log(d,'FINALIZAR_SERVICO',f'OS-{s.id}')
             elif action=='photo': add_photos(d,request.files.getlist('photos'),service_id=s.id);log(d,'ADICIONAR_FOTOS',f'OS-{s.id}')
             d.commit();flash('Serviço atualizado.');return redirect(f'/servicos/{sid}')
         p=d.get(Product,s.product_id);photos=d.query(Photo).filter(Photo.service_id==sid).order_by(Photo.created_at.desc()).all();product_photos=d.query(Photo).filter(Photo.product_id==s.product_id).order_by(Photo.created_at.desc()).all()
-    return shell('''<h1>OS-{{'%05d'%s.id}} — {{p.name if p else 'Produto'}}</h1><div class="grid"><div><div class="panel"><p><b>Patrimônio:</b> {{p.code if p else '-'}}</p><p><b>Setor:</b> {{s.client or (p.sector if p else '-')}}</p><p><b>Problema:</b> {{s.problem}}</p><p><b>Prioridade:</b> {{priority_for(s)}}</p><p><b>Status:</b> {{s.status}}</p><p><b>Entrada:</b> {{s.created_at.strftime('%d/%m/%Y %H:%M')}}</p><p><b>Início:</b> {{s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else 'Ainda não iniciado'}}</p><p><b>Finalização:</b> {{s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else 'Ainda não finalizado'}}</p><p><b>Observações:</b> {{s.notes or '-'}}</p></div><br><div class="panel"><h3>📷 Fotos</h3><div class="photos">{% for ph in product_photos+photos %}<a href="/fotos/{{ph.id}}"><img src="/fotos/{{ph.id}}"></a>{% else %}<p class="muted">Nenhuma foto.</p>{% endfor %}</div></div></div><div class="panel"><h3>Ações</h3>{% if not s.started_at %}<form method="post"><input type="hidden" name="action" value="start"><button class="btn green full">▶ Iniciar serviço</button></form><br>{% endif %}{% if s.status!='Finalizado' %}<form method="post" enctype="multipart/form-data"><input type="hidden" name="action" value="photo"><div class="field"><label>📷 ADICIONAR FOTOS</label><input type="file" name="photos" accept="image/*" multiple></div><button class="btn green full">Adicionar fotos</button></form><br><form method="post"><input type="hidden" name="action" value="finish"><div class="field"><label>OBSERVAÇÕES FINAIS</label><textarea name="notes" rows="5"></textarea></div><button class="btn full">✓ Finalizar serviço</button></form>{% endif %}</div></div>''',s=s,p=p,photos=photos,product_photos=product_photos,priority_for=priority_for)
+    return shell('''<h1>OS-{{'%05d'%s.id}} — {{p.name if p else 'Produto'}}</h1><div class="grid"><div><div class="panel"><p><b>Patrimônio:</b> {{p.code if p else '-'}}</p><p><b>Setor:</b> {{s.client or (p.sector if p else '-')}}</p><p><b>Problema:</b> {{s.problem}}</p><p><b>Prioridade:</b> {{priority_for(s)}}</p><p><b>Status:</b> {{s.status}}</p><p><b>Entrada:</b> {{s.created_at.strftime('%d/%m/%Y %H:%M')}}</p><p><b>Início:</b> {{s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else 'Ainda não iniciado'}}</p><p><b>Finalização:</b> {{s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else 'Ainda não finalizado'}}</p><p><b>O que foi feito:</b> {{s.work_done or '-'}}</p><p><b>Observação da finalização:</b> {{s.notes or '-'}}</p></div><br><div class="panel"><h3>📷 Fotos</h3><div class="photos">{% for ph in product_photos+photos %}<a href="/fotos/{{ph.id}}"><img src="/fotos/{{ph.id}}"></a>{% else %}<p class="muted">Nenhuma foto.</p>{% endfor %}</div></div></div><div class="panel"><h3>Ações</h3>{% if not s.started_at %}<form method="post"><input type="hidden" name="action" value="start"><button class="btn green full">▶ Iniciar serviço</button></form><br>{% endif %}{% if s.status!='Finalizado' %}<form method="post" enctype="multipart/form-data"><input type="hidden" name="action" value="photo"><div class="field"><label>📷 ADICIONAR FOTOS</label><input type="file" name="photos" accept="image/*" multiple></div><button class="btn green full">Adicionar fotos</button></form><br><form method="post"><input type="hidden" name="action" value="finish"><div class="field"><label>O QUE FOI FEITO</label><textarea name="work_done" rows="4" placeholder="Descreva o serviço realizado..." required></textarea></div><div class="field"><label>OBSERVAÇÃO DA FINALIZAÇÃO</label><textarea name="notes" rows="4" placeholder="Observações finais..."></textarea></div><button class="btn full">✓ Finalizar serviço</button></form>{% endif %}</div></div>''',s=s,p=p,photos=photos,product_photos=product_photos,priority_for=priority_for)
 
 @app.get('/relatorios')
 @auth
@@ -253,7 +256,7 @@ def relatorios():
         if request.args.get('start'): q=q.filter(Service.created_at>=datetime.fromisoformat(request.args['start']))
         if request.args.get('end'): q=q.filter(Service.created_at<datetime.fromisoformat(request.args['end'])+timedelta(days=1))
         services=q.order_by(Service.created_at.desc()).all();users=d.query(User).order_by(User.name).all()
-    return shell('''<h1>Relatórios</h1><div class="panel"><form class="form"><div class="field"><label>INÍCIO</label><input type="date" name="start" value="{{request.args.get('start','')}}"></div><div class="field"><label>FIM</label><input type="date" name="end" value="{{request.args.get('end','')}}"></div>{% if session.role in ['admin','chefe'] %}<div class="field"><label>FUNCIONÁRIO</label><select name="responsible_id"><option value="">Todos</option>{% for u in users %}<option value="{{u.id}}">{{u.name}}</option>{% endfor %}</select></div>{% endif %}<div class="field"><label>STATUS</label><select name="status"><option value="">Todos</option><option>Pendente</option><option>Em andamento</option><option>Finalizado</option></select></div><div class="field"><label>PRIORIDADE</label><select name="priority"><option value="">Todas</option><option>Normal</option><option>Pouca urgência</option><option>Urgente</option></select></div><button class="btn green fullcol">Filtrar</button></form></div><br><div class="actions"><a class="btn green" href="{{url_for('relatorio_csv',**request.args)}}">⬇ CSV</a><a class="btn green" href="{{url_for('relatorio_xlsx',**request.args)}}">⬇ Excel</a><a class="btn" href="{{url_for('relatorio_pdf',**request.args)}}">⬇ PDF</a><button class="btn" onclick="window.print()">🖨 Imprimir</button></div><br><div class="panel"><table class="table"><tr><th>OS</th><th>Produto</th><th>Responsável</th><th>Prioridade</th><th>Início</th><th>Finalização</th><th>Status</th></tr>{% for s in services %}<tr><td>OS-{{'%05d'%s.id}}</td><td>{{s.product_id}}</td><td>{% for u in users if u.id==s.responsible_id %}{{u.name}}{% endfor %}</td><td>{{priority_for(s)}}</td><td>{{s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '-'}}</td><td>{{s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '-'}}</td><td>{{s.status}}</td></tr>{% else %}<tr><td colspan="7">Nenhum serviço.</td></tr>{% endfor %}</table></div>''',services=services,users=users,priority_for=priority_for)
+    return shell('''<h1>Relatórios</h1><div class="panel"><form class="form"><div class="field"><label>INÍCIO</label><input type="date" name="start" value="{{request.args.get('start','')}}"></div><div class="field"><label>FIM</label><input type="date" name="end" value="{{request.args.get('end','')}}"></div>{% if session.role in ['admin','chefe'] %}<div class="field"><label>FUNCIONÁRIO</label><select name="responsible_id"><option value="">Todos</option>{% for u in users %}<option value="{{u.id}}">{{u.name}}</option>{% endfor %}</select></div>{% endif %}<div class="field"><label>STATUS</label><select name="status"><option value="">Todos</option><option>Pendente</option><option>Em andamento</option><option>Finalizado</option></select></div><div class="field"><label>PRIORIDADE</label><select name="priority"><option value="">Todas</option><option>Normal</option><option>Pouca urgência</option><option>Urgente</option></select></div><button class="btn green fullcol">Filtrar</button></form></div><br><div class="actions"><a class="btn green" href="{{url_for('relatorio_csv',**request.args)}}">⬇ CSV</a><a class="btn green" href="{{url_for('relatorio_xlsx',**request.args)}}">⬇ Excel</a><a class="btn" href="{{url_for('relatorio_pdf',**request.args)}}">⬇ PDF</a><button class="btn" onclick="window.print()">🖨 Imprimir</button></div><br><div class="panel"><table class="table"><tr><th>OS</th><th>Cliente</th><th>Produto</th><th>Responsável</th><th>Prioridade</th><th>O que foi feito</th><th>Observação final</th><th>Início</th><th>Finalização</th><th>Status</th></tr>{% for s in services %}<tr><td>OS-{{'%05d'%s.id}}</td><td>{{s.client or '-'}}</td><td>{% if s.product_id %}{{s.product_id}}{% else %}Sem produto{% endif %}</td><td>{% for u in users if u.id==s.responsible_id %}{{u.name}}{% endfor %}</td><td>{{priority_for(s)}}</td><td>{{s.work_done or '-'}}</td><td>{{s.notes or '-'}}</td><td>{{s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '-'}}</td><td>{{s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '-'}}</td><td>{{s.status}}</td></tr>{% else %}<tr><td colspan="7">Nenhum serviço.</td></tr>{% endfor %}</table></div>''',services=services,users=users,priority_for=priority_for)
 def report_rows():
     with db() as d:
         q=d.query(Service)
@@ -267,22 +270,41 @@ def report_rows():
 @app.get('/relatorios/csv')
 @auth
 def relatorio_csv():
-    out=io.StringIO();w=csv.writer(out);w.writerow(['OS','Produto','Patrimônio','Setor','Prioridade','Status','Responsável','Entrada','Início','Finalização','Observações'])
-    for s,p,u in report_rows(): w.writerow([f'OS-{s.id:05d}',p.name if p else '',p.code if p else '',p.sector if p else '',priority_for(s),s.status,u.name if u else '',s.created_at.strftime('%d/%m/%Y %H:%M'),s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '',s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '',s.notes])
+    out=io.StringIO();w=csv.writer(out);w.writerow(['OS','Cliente','Produto','Patrimônio','Setor','Prioridade','Status','Responsável','Entrada','Início','Finalização','O que foi feito','Observação da finalização'])
+    for s,p,u in report_rows(): w.writerow([f'OS-{s.id:05d}',s.client,p.name if p else '',p.code if p else '',p.sector if p else '',priority_for(s),s.status,u.name if u else '',s.created_at.strftime('%d/%m/%Y %H:%M'),s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '',s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '',s.work_done,s.notes])
     return send_file(io.BytesIO(out.getvalue().encode('utf-8-sig')),as_attachment=True,download_name='relatorio_sakamoto.csv',mimetype='text/csv')
 @app.get('/relatorios/xlsx')
 @auth
 def relatorio_xlsx():
-    wb=Workbook();ws=wb.active;ws.title='Manutenções';ws.append(['OS','Produto','Patrimônio','Setor','Prioridade','Status','Responsável','Entrada','Início','Finalização','Observações'])
-    for s,p,u in report_rows(): ws.append([f'OS-{s.id:05d}',p.name if p else '',p.code if p else '',p.sector if p else '',priority_for(s),s.status,u.name if u else '',s.created_at.strftime('%d/%m/%Y %H:%M'),s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '',s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '',s.notes])
+    wb=Workbook();ws=wb.active;ws.title='Manutenções';ws.append(['OS','Cliente','Produto','Patrimônio','Setor','Prioridade','Status','Responsável','Entrada','Início','Finalização','O que foi feito','Observação da finalização'])
+    for s,p,u in report_rows(): ws.append([f'OS-{s.id:05d}',s.client,p.name if p else '',p.code if p else '',p.sector if p else '',priority_for(s),s.status,u.name if u else '',s.created_at.strftime('%d/%m/%Y %H:%M'),s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '',s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '',s.work_done,s.notes])
     buf=io.BytesIO();wb.save(buf);buf.seek(0);return send_file(buf,as_attachment=True,download_name='relatorio_sakamoto.xlsx',mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 @app.get('/relatorios/pdf')
 @auth
 def relatorio_pdf():
-    rows=report_rows();buf=io.BytesIO();c=canvas.Canvas(buf,pagesize=A4);w,h=A4;y=h-45;c.setFont('Helvetica-Bold',16);c.drawString(40,y,'SAKAMOTO — RELATÓRIO DE MANUTENÇÃO');y-=22;c.setFont('Helvetica',9);c.drawString(40,y,'Gerado em '+datetime.now().strftime('%d/%m/%Y %H:%M'));y-=25
+    rows=report_rows();buf=io.BytesIO();c=canvas.Canvas(buf,pagesize=A4);w,h=A4;y=h-45
+    c.setFont('Helvetica-Bold',16);c.drawString(40,y,'SAKAMOTO — RELATÓRIO DE MANUTENÇÃO');y-=22
+    c.setFont('Helvetica',9);c.drawString(40,y,'Gerado em '+datetime.now().strftime('%d/%m/%Y %H:%M'));y-=25
+    def line(label,value,indent=55):
+        nonlocal y
+        text_value=str(value or '-')
+        max_chars=88
+        chunks=[text_value[i:i+max_chars] for i in range(0,len(text_value),max_chars)] or ['-']
+        for i,ch in enumerate(chunks):
+            c.drawString(indent,y,(label if i==0 else ' '*18)+ch);y-=12
     for s,p,u in rows:
-        c.drawString(40,y,f'OS-{s.id:05d} | {p.name if p else "-"} | {priority_for(s)} | {s.status}');y-=14;c.drawString(55,y,f'Entrada: {s.created_at.strftime("%d/%m/%Y %H:%M")} | Início: {s.started_at.strftime("%d/%m/%Y %H:%M") if s.started_at else "-"} | Final: {s.finished_at.strftime("%d/%m/%Y %H:%M") if s.finished_at else "-"}');y-=18
-        if y<55:c.showPage();y=h-45;c.setFont('Helvetica',9)
+        c.setFont('Helvetica-Bold',10);c.drawString(40,y,f'OS-{s.id:05d} | {s.status} | {priority_for(s)}');y-=15;c.setFont('Helvetica',9)
+        line('Cliente: ',s.client)
+        line('Produto: ',p.name if p else 'Sem produto')
+        line('Responsável: ',u.name if u else '-')
+        line('Entrada: ',s.created_at.strftime('%d/%m/%Y %H:%M'))
+        line('Início: ',s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '-')
+        line('Finalização: ',s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '-')
+        line('O que foi feito: ',s.work_done)
+        line('Observação final: ',s.notes)
+        y-=10
+        if y<75:
+            c.showPage();y=h-45;c.setFont('Helvetica',9)
     c.save();buf.seek(0);return send_file(buf,as_attachment=True,download_name='relatorio_sakamoto.pdf',mimetype='application/pdf')
 
 @app.get('/historico')
