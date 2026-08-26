@@ -17,76 +17,90 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Restaurar app completo do commit estável
-        run: |
-          git checkout c64f80a537b111f5799785a2c797b859840ec28c -- app.py
+      - name: Restaurar app completo da versão funcional
+        run: git checkout d12c44b73c80fbdce7dec4abbcf09cd62bebdf8f -- app.py
 
-      - name: Corrigir inicialização do banco
+      - name: Corrigir inicialização e migração do banco
         run: |
           python - <<'PY'
           from pathlib import Path
           import re
-          p = Path('app.py')
-          s = p.read_text(encoding='utf-8')
 
-          # Remove a migração legada que consulta services.product.
-          s = re.sub(
-              r"\n    with SessionLocal\(\) as d:\n        try:\n            rows=d\.execute\(text\(\"SELECT id, product FROM services.*?\n            d\.rollback\(\)\n",
+          path = Path('app.py')
+          source = path.read_text(encoding='utf-8')
+
+          # O código legado consultava services.product, coluna que não existe no modelo atual.
+          source = re.sub(
+              r"\n    with SessionLocal\(\) as d:\n        # Migra ordens antigas.*?\n            d\.rollback\(\)\n",
               "\n",
-              s,
+              source,
               flags=re.S,
           )
 
-          # Remove inicialização por requisição; o banco deve ser preparado uma vez.
-          s = re.sub(
-              r"\n# Keep the health endpoint independent.*?\n@app\.before_request\ndef ensure_database\(\):.*?\n    return None\n",
+          source = re.sub(
+              r"\n    with SessionLocal\(\) as d:\n        try:\n            legacy_col=.*?\n            d\.rollback\(\)\n",
               "\n",
-              s,
+              source,
               flags=re.S,
           )
 
-          s = re.sub(
-              r"\n_db_ready=False\n@app\.get\('/status'\)",
-              "\n@app.get('/status')",
-              s,
+          # Nunca inicializar/migrar o banco em cada request.
+          source = re.sub(
+              r"\n@app\.before_request\ndef startup\(\):\n    try:init_db\(\)\n    except Exception:pass\n",
+              "\n",
+              source,
           )
 
-          # Inicializa o schema uma vez quando o módulo Flask é carregado pelo Gunicorn.
+          # Inicializa o schema uma vez quando Gunicorn importa app:app.
           marker = "\ndef db(): return SessionLocal()\n"
-          boot = "\n# Database schema is initialized once per Gunicorn worker, never per request.\ntry:\n    init_db()\nexcept Exception:\n    app.logger.exception('Database initialization failed during startup')\n\n"
-          if boot.strip() not in s:
-              s = s.replace(marker, boot + "def db(): return SessionLocal()\n", 1)
+          boot = "\n# Initialize database schema once per Gunicorn worker, never per request.\ntry:\n    init_db()\nexcept Exception:\n    app.logger.exception('Database initialization failed during startup')\n\n"
+          if "Initialize database schema once per Gunicorn worker" not in source:
+              source = source.replace(marker, boot + "def db(): return SessionLocal()\n", 1)
 
-          p.write_text(s, encoding='utf-8')
+          # O relatório precisa guardar o serviço realizado separadamente da observação final.
+          service_line = "id:Mapped[int]=mapped_column(primary_key=True); product_id:Mapped[int|None]=mapped_column(ForeignKey('products.id'),nullable=True); client:Mapped[str]=mapped_column(String(160),default=''); problem:Mapped[str]=mapped_column(Text,default=''); priority:Mapped[str]=mapped_column(String(30),default='Normal'); status:Mapped[str]=mapped_column(String(30),default='Pendente'); responsible_id:Mapped[int|None]=mapped_column(ForeignKey('users.id'),nullable=True); created_by:Mapped[int]=mapped_column(ForeignKey('users.id')); created_at:Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow); started_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True); finished_at:Mapped[datetime|None]=mapped_column(DateTime,nullable=True); notes:Mapped[str]=mapped_column(Text,default='')"
+          service_new = service_line[:-len("; notes:Mapped[str]=mapped_column(Text,default='')")] + "; work_done:Mapped[str]=mapped_column(Text,default=''); notes:Mapped[str]=mapped_column(Text,default='')"
+          if "work_done:Mapped[str]" not in source and service_line in source:
+              source = source.replace(service_line, service_new, 1)
+
+          source = source.replace(
+              "if 'product_id' not in scols: c.execute(text(\"ALTER TABLE services ADD COLUMN product_id INTEGER\"))",
+              "if 'product_id' not in scols: c.execute(text(\"ALTER TABLE services ADD COLUMN product_id INTEGER\"))\n            if 'work_done' not in scols: c.execute(text(\"ALTER TABLE services ADD COLUMN work_done TEXT DEFAULT ''\"))",
+              1,
+          )
+          source = source.replace(
+              "c.execute(text(\"ALTER TABLE services ADD COLUMN IF NOT EXISTS product_id INTEGER\"))",
+              "c.execute(text(\"ALTER TABLE services ADD COLUMN IF NOT EXISTS product_id INTEGER\"))\n            c.execute(text(\"ALTER TABLE services ADD COLUMN IF NOT EXISTS work_done TEXT DEFAULT ''\"))",
+              1,
+          )
+
+          # Finalização: registrar o que foi feito e a observação final.
+          source = source.replace(
+              "s.finished_at=datetime.utcnow();s.status='Finalizado';s.notes=request.form.get('notes','');",
+              "s.finished_at=datetime.utcnow();s.status='Finalizado';s.work_done=request.form.get('work_done','').strip();s.notes=request.form.get('notes','').strip();",
+              1,
+          )
+
+          path.write_text(source, encoding='utf-8')
           PY
 
-      - name: Validar aplicação
+      - name: Validar código e rotas
         run: |
           python -m py_compile app.py
-          python - <<'PY'
-          import ast
-          from pathlib import Path
-          tree = ast.parse(Path('app.py').read_text(encoding='utf-8'))
-          routes = []
-          for node in tree.body:
-              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                  for dec in node.decorator_list:
-                      if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute) and dec.func.attr in {'route','get','post','put','delete'}:
-                          for arg in dec.args[:1]:
-                              if isinstance(arg, ast.Constant): routes.append(arg.value)
-          required = {'/dashboard','/servicos','/produtos','/relatorios'}
-          missing = required - set(routes)
-          if missing:
-              raise SystemExit(f'Rotas essenciais ausentes: {sorted(missing)}')
-          print('Rotas essenciais:', sorted(required))
-          PY
+          grep -q "@app.get('/dashboard')" app.py
+          grep -q "@app.get('/servicos')" app.py
+          grep -q "@app.get('/produtos')" app.py
+          grep -q "@app.get('/relatorios')" app.py
+          ! grep -q "SELECT id, product FROM services" app.py
+          ! grep -q "def startup" app.py
+          echo "Código validado: Dashboard, serviços, produtos e relatórios presentes."
 
-      - name: Publicar correção e remover workflow temporário
+      - name: Publicar e remover workflow temporário
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           rm -f .github/workflows/restore-and-fix-app.yml
           git add app.py .github/workflows/restore-and-fix-app.yml
           git diff --cached --quiet && exit 0
-          git commit -m "fix: restaurar rotas e corrigir inicializacao do banco"
+          git commit -m "fix: restaurar dashboard e corrigir banco"
           git push
