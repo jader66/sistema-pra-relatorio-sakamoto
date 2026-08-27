@@ -52,8 +52,6 @@ def init_db():
             c.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS priority VARCHAR(30) DEFAULT 'Normal'"))
             c.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS product_id INTEGER"))
             c.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS work_done TEXT DEFAULT ''"))
-
-# Schema inicializado uma vez por worker, nunca por requisição.
 try:
     init_db()
 except Exception:
@@ -94,7 +92,7 @@ def login_html(create=False):
     extra='''<h2>Crie sua conta</h2><p class="muted">A primeira conta será Administrador. Depois os cargos são definidos pelo Administrador.</p><form method="post"><div class="field"><label>NOME</label><input name="name" required></div><div class="field"><label>USUÁRIO</label><input name="username" required></div><div class="field"><label>SENHA</label><input type="password" name="password" minlength="8" required></div><div class="field"><label>CONFIRMAR SENHA</label><input type="password" name="confirm" minlength="8" required></div><button class="btn green full">CRIAR CONTA ADMINISTRADOR</button></form><a class="link" href="/login">Voltar ao login</a>''' if create else '''<h2>Login</h2><form method="post"><div class="field"><label>USUÁRIO</label><input name="username" autocomplete="username" required></div><div class="field"><label>SENHA</label><input type="password" name="password" autocomplete="current-password" required></div><button class="btn green full">ENTRAR</button></form><a class="link" href="/criar-conta">➕ Criar conta</a>'''
     return render_template_string(f'''<!doctype html><html lang="pt-br"><head><meta charset="utf-8">{STYLE}</head><body><div class="login"><div class="box"><div class="logo"><b>SAKA</b>MOTO</div><div class="sub">SISTEMA DE CONTROLE E MANUTENÇÃO</div>{{% for m in get_flashed_messages() %}}<p class="flash">{{{{m}}}}</p>{{% endfor %}}{extra}</div></div></body></html>''')
 def shell(content,**ctx):
-    return render_template_string(f'''<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Sakamoto | Manutenção</title>{STYLE}</head><body><div class="app"><aside class="side"><div class="brand"><b>SAKA</b>MOTO<small>MANUTENÇÃO</small></div><nav class="nav"><a href="/dashboard">📊 <span>Dashboard</span></a><a href="/servicos">🛠️ <span>Ordens de serviço</span></a><a href="/produtos">📦 <span>Produtos</span></a>{{% if session.role in ['admin','chefe'] %}}<a href="/usuarios">👥 <span>Funcionários</span></a>{{% endif %}}<a href="/relatorios">📄 <span>Relatórios</span></a><a href="/historico">🕘 <span>Histórico</span></a><a href="/configuracoes">⚙️ <span>Configurações</span></a></nav></aside><main class="main"><header class="top"><span>🔔</span><b>{{{{session.name}}}}</b><span class="badge">{{{{roles[session.role]}}}}</span><a class="btn" href="/logout">Sair</a></header><section class="content">{content}</section></main></div></body></html>''',roles=ROLES,**ctx)
+    return render_template_string(f'''<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sakamoto | Manutenção</title>{STYLE}</head><body><div class="app"><aside class="side"><div class="brand"><b>SAKA</b>MOTO<small>MANUTENÇÃO</small></div><nav class="nav"><a href="/dashboard">📊 <span>Dashboard</span></a><a href="/servicos">🛠️ <span>Ordens de serviço</span></a><a href="/produtos">📦 <span>Produtos</span></a>{{% if session.role in ['admin','chefe'] %}}<a href="/usuarios">👥 <span>Funcionários</span></a>{{% endif %}}<a href="/relatorios">📄 <span>Relatórios</span></a><a href="/historico">🕘 <span>Histórico</span></a><a href="/configuracoes">⚙️ <span>Configurações</span></a></nav></aside><main class="main"><header class="top"><span>🔔</span><b>{{{{session.name}}}}</b><span class="badge">{{{{roles[session.role]}}}}</span><a class="btn" href="/logout">Sair</a></header><section class="content">{content}</section></main></div></body></html>''',roles=ROLES,**ctx)
 
 @app.get('/')
 def index(): return redirect('/login')
@@ -130,23 +128,31 @@ def dashboard():
         q=d.query(Service)
         if session['role']=='funcionario': q=q.filter(Service.responsible_id==session['uid'])
         services=q.all();pending=sum(s.status=='Pendente' for s in services);active=sum(s.status=='Em andamento' for s in services);finished=sum(s.status=='Finalizado' for s in services);urgent=sum(priority_for(s)=='Urgente' for s in services);products=d.query(Product).count()
-    return shell('''<h1>Dashboard</h1><p class="muted">Controle das manutenções</p><div class="cards"><div class="card"><div class="num">{{products}}</div><div class="label">Equipamentos cadastrados</div></div><div class="card"><div class="num">{{pending}}</div><div class="label">Aguardando</div></div><div class="card"><div class="num">{{active}}</div><div class="label">Em manutenção</div></div><div class="card"><div class="num">{{finished}}</div><div class="label">Finalizados</div></div><div class="card"><div class="num">{{urgent}}</div><div class="label">Urgentes</div></div></div><div class="panel"><h3>Fluxo</h3><p class="muted">Cadastrar equipamento → atribuir manutenção → iniciar → consertar → finalizar → histórico.</p></div>''',products=products,pending=pending,active=active,finished=finished,urgent=urgent)
+    return shell('''<h1>Dashboard</h1><p class="muted">Controle das manutenções</p>{% if session.role in ['admin','chefe'] %}<div class="actions"><a class="btn green" href="/usuarios">👤 Criar usuário</a><a class="btn" href="/servicos/novo">🛠️ Nova manutenção</a></div>{% endif %}<div class="cards"><div class="card"><div class="num">{{products}}</div><div class="label">Equipamentos cadastrados</div></div><div class="card"><div class="num">{{pending}}</div><div class="label">Aguardando</div></div><div class="card"><div class="num">{{active}}</div><div class="label">Em manutenção</div></div><div class="card"><div class="num">{{finished}}</div><div class="label">Finalizados</div></div><div class="card"><div class="num">{{urgent}}</div><div class="label">Urgentes</div></div></div><div class="panel"><h3>Fluxo</h3><p class="muted">Cadastrar equipamento → atribuir manutenção → iniciar → consertar → finalizar → histórico.</p></div>''',products=products,pending=pending,active=active,finished=finished,urgent=urgent)
+
+@app.get('/criar-usuario')
+@auth
+@manager
+def criar_usuario_pagina(): return redirect('/usuarios')
 
 @app.get('/usuarios')
 @auth
 @manager
 def usuarios():
     with db() as d: users=d.query(User).order_by(User.name).all()
-    return shell('''<h1>Funcionários e usuários</h1><div class="panel"><form class="form" method="post" action="/usuarios/criar"><div class="field"><label>NOME</label><input name="name" required></div><div class="field"><label>LOGIN</label><input name="username" required></div><div class="field"><label>SENHA</label><input name="password" type="password" minlength="8" required></div><div class="field"><label>CARGO</label><select name="role"><option value="funcionario">Funcionário</option><option value="chefe">Chefe</option>{% if session.role=='admin' %}<option value="admin">Administrador</option>{% endif %}</select></div><button class="btn green fullcol">➕ Criar usuário</button></form></div><br><div class="panel"><table class="table"><tr><th>Nome</th><th>Login</th><th>Cargo</th><th>Status</th><th>Ação</th></tr>{% for u in users %}<tr><td>{{u.name}}</td><td>{{u.username}}</td><td>{{roles[u.role]}}</td><td>{{'Ativo' if u.active else 'Desativado'}}</td><td>{% if session.role=='admin' %}<a class="btn" href="/usuarios/{{u.id}}">Editar</a>{% endif %}</td></tr>{% endfor %}</table></div>''',users=users)
+    return shell('''<h1>Funcionários e usuários</h1><div class="actions"><a class="btn green" href="#novo-usuario">➕ Criar usuário</a></div><br><div class="panel" id="novo-usuario"><form class="form" method="post" action="/usuarios/criar"><div class="field"><label>NOME</label><input name="name" required></div><div class="field"><label>LOGIN</label><input name="username" required></div><div class="field"><label>SENHA</label><input name="password" type="password" minlength="8" required></div><div class="field"><label>CARGO</label><select name="role"><option value="funcionario">Funcionário</option><option value="chefe">Chefe</option>{% if session.role=='admin' %}<option value="admin">Administrador</option>{% endif %}</select></div><button class="btn green fullcol">➕ Criar usuário</button></form></div><br><div class="panel"><table class="table"><tr><th>Nome</th><th>Login</th><th>Cargo</th><th>Status</th><th>Ação</th></tr>{% for u in users %}<tr><td>{{u.name}}</td><td>{{u.username}}</td><td>{{roles[u.role]}}</td><td>{{'Ativo' if u.active else 'Desativado'}}</td><td>{% if session.role=='admin' %}<a class="btn" href="/usuarios/{{u.id}}">Editar</a>{% endif %}</td></tr>{% endfor %}</table></div>''',users=users)
 @app.post('/usuarios/criar')
 @auth
 @manager
 def criar_usuario():
     role=request.form.get('role','funcionario')
+    if role not in ROLES: abort(400)
     if session['role']=='chefe' and role!='funcionario': abort(403)
     with db() as d:
-        if d.query(User).filter(func.lower(User.username)==request.form['username'].strip().lower()).first(): flash('Esse login já existe.');return redirect('/usuarios')
-        d.add(User(name=request.form['name'].strip(),username=request.form['username'].strip().lower(),password_hash=generate_password_hash(request.form['password']),role=role));d.commit();flash('Usuário criado.');return redirect('/usuarios')
+        username=request.form.get('username','').strip().lower(); name=request.form.get('name','').strip(); password=request.form.get('password','')
+        if not name or not username or len(password)<8: flash('Preencha nome, login e senha com pelo menos 8 caracteres.');return redirect('/usuarios')
+        if d.query(User).filter(func.lower(User.username)==username).first(): flash('Esse login já existe.');return redirect('/usuarios')
+        d.add(User(name=name,username=username,password_hash=generate_password_hash(password),role=role));d.commit();log(d,'CRIAR_USUARIO',f'{username} | {role}');d.commit();flash('Usuário criado com sucesso.');return redirect('/usuarios')
 @app.route('/usuarios/<int:uid>',methods=['GET','POST'])
 @auth
 @admin
@@ -188,26 +194,22 @@ def foto(photo_id):
     with db() as d:
         ph=d.get(Photo,photo_id)
         if not ph: abort(404)
-        if session['role']=='funcionario' and ph.service_id:
-            s=d.get(Service,ph.service_id)
-            if not s or s.responsible_id!=session['uid']: abort(403)
         return send_file(io.BytesIO(ph.data),mimetype=ph.mime,download_name=ph.filename)
 
 @app.route('/servicos/novo',methods=['GET','POST'])
 @auth
 @manager
-def novo_servico():
+def servico_novo():
     with db() as d:
         products=d.query(Product).order_by(Product.name).all();users=d.query(User).filter(User.active==True).order_by(User.name).all();selected=request.args.get('product_id')
         if request.method=='POST':
-            pid=request.form.get('product_id');p=d.get(Product,int(pid)) if pid and pid.isdigit() else None
+            pid=request.form.get('product_id') or None
+            p=d.get(Product,int(pid)) if pid and pid.isdigit() else None
             if not p: flash('Sem serviço: selecione um produto já cadastrado.');return redirect('/servicos/novo')
-            priority=request.form.get('priority',p.priority)
-            if priority not in ('Normal','Pouca urgência','Urgente'): priority='Normal'
-            s=Service(product_id=p.id,client=request.form.get('client','').strip() or p.sector,problem=request.form.get('problem','').strip(),priority=priority,responsible_id=int(request.form['responsible_id']),created_by=session['uid']);d.add(s);d.commit();count=add_photos(d,request.files.getlist('photos'),service_id=s.id);log(d,'ATRIBUIR_SERVICO',f'OS-{s.id} | Produto {p.id} | {count} foto(s)');d.commit();flash('Manutenção enviada.');return redirect(f'/servicos/{s.id}')
+            s=Service(product_id=p.id,client=request.form.get('client','').strip(),problem=request.form['problem'].strip(),priority=request.form.get('priority','Normal'),responsible_id=int(request.form['responsible_id']),created_by=session['uid']);d.add(s);d.commit();count=add_photos(d,request.files.getlist('photos'),service_id=s.id);log(d,'CRIAR_OS',f'OS-{s.id:05d} | {p.name} | {count} foto(s)');d.commit();flash('Manutenção enviada.');return redirect(f'/servicos/{s.id}')
     return shell('''<h1>🛠️ Enviar manutenção</h1>{% if products %}<div class="panel"><form method="post" enctype="multipart/form-data" class="form"><div class="field fullcol"><label>PRODUTO CADASTRADO</label><select name="product_id" required><option value="">Selecione um produto...</option>{% for p in products %}<option value="{{p.id}}" {% if selected==p.id|string %}selected{% endif %}>{{p.name}} — {{p.code or 'sem patrimônio'}} — {{p.sector or 'sem setor'}}</option>{% endfor %}</select></div><div class="field"><label>CLIENTE / SETOR</label><input name="client"></div><div class="field"><label>FUNCIONÁRIO RESPONSÁVEL</label><select name="responsible_id" required>{% for u in users %}<option value="{{u.id}}">{{u.name}} — {{roles[u.role]}}</option>{% endfor %}</select></div><div class="field"><label>PRIORIDADE</label><select name="priority"><option>Normal</option><option>Pouca urgência</option><option>Urgente</option></select></div><div class="field fullcol"><label>PROBLEMA / SERVIÇO</label><textarea name="problem" rows="5" required></textarea></div><div class="field fullcol"><label>📷 FOTOS DO PROBLEMA / EQUIPAMENTO</label><input type="file" name="photos" accept="image/*" multiple></div><button class="btn green fullcol">ENVIAR MANUTENÇÃO</button></form></div>{% else %}<div class="panel"><h2>Sem serviço</h2><p class="muted">Nenhum produto/equipamento foi cadastrado.</p><a class="btn green" href="/produtos">📦 Cadastrar produto primeiro</a></div>{% endif %}''',products=products,users=users,selected=selected)
 
-@app.get('/servicos')
+@app.route('/servicos',methods=['GET'])
 @auth
 def servicos():
     with db() as d:
@@ -225,82 +227,94 @@ def servico_detalhe(sid):
         if session['role']=='funcionario' and s.responsible_id!=session['uid']: abort(403)
         if request.method=='POST':
             action=request.form.get('action')
-            if action=='start' and s.started_at is None: s.started_at=datetime.utcnow();s.status='Em andamento';log(d,'INICIAR_SERVICO',f'OS-{s.id}')
-            elif action=='finish' and s.status!='Finalizado': s.finished_at=datetime.utcnow();s.status='Finalizado';s.work_done=request.form.get('work_done','').strip();s.notes=request.form.get('notes','').strip();log(d,'FINALIZAR_SERVICO',f'OS-{s.id}')
-            elif action=='photo': add_photos(d,request.files.getlist('photos'),service_id=s.id);log(d,'ADICIONAR_FOTOS',f'OS-{s.id}')
-            d.commit();flash('Serviço atualizado.');return redirect(f'/servicos/{sid}')
-        p=d.get(Product,s.product_id);photos=d.query(Photo).filter(Photo.service_id==sid).order_by(Photo.created_at.desc()).all();product_photos=d.query(Photo).filter(Photo.product_id==s.product_id).order_by(Photo.created_at.desc()).all()
-    return shell('''<h1>OS-{{'%05d'%s.id}} — {{p.name if p else 'Produto'}}</h1><div class="grid"><div><div class="panel"><p><b>Patrimônio:</b> {{p.code if p else '-'}}</p><p><b>Setor:</b> {{s.client or (p.sector if p else '-')}}</p><p><b>Problema:</b> {{s.problem}}</p><p><b>Prioridade:</b> {{priority_for(s)}}</p><p><b>Status:</b> {{s.status}}</p><p><b>Entrada:</b> {{s.created_at.strftime('%d/%m/%Y %H:%M')}}</p><p><b>Início:</b> {{s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else 'Ainda não iniciado'}}</p><p><b>Finalização:</b> {{s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else 'Ainda não finalizado'}}</p><p><b>O que foi feito:</b> {{s.work_done or '-'}}</p><p><b>Observação da finalização:</b> {{s.notes or '-'}}</p></div><br><div class="panel"><h3>📷 Fotos</h3><div class="photos">{% for ph in product_photos+photos %}<a href="/fotos/{{ph.id}}"><img src="/fotos/{{ph.id}}"></a>{% else %}<p class="muted">Nenhuma foto.</p>{% endfor %}</div></div></div><div class="panel"><h3>Ações</h3>{% if not s.started_at %}<form method="post"><input type="hidden" name="action" value="start"><button class="btn green full">▶ Iniciar serviço</button></form><br>{% endif %}{% if s.status!='Finalizado' %}<form method="post" enctype="multipart/form-data"><input type="hidden" name="action" value="photo"><div class="field"><label>📷 ADICIONAR FOTOS</label><input type="file" name="photos" accept="image/*" multiple></div><button class="btn green full">Adicionar fotos</button></form><br><form method="post"><input type="hidden" name="action" value="finish"><div class="field"><label>O QUE FOI FEITO</label><textarea name="work_done" rows="5" placeholder="Descreva o serviço realizado..." required></textarea></div><div class="field"><label>OBSERVAÇÃO DA FINALIZAÇÃO</label><textarea name="notes" rows="5" placeholder="Observações finais..."></textarea></div><button class="btn full">✓ Finalizar serviço</button></form>{% endif %}</div></div>''',s=s,p=p,photos=photos,product_photos=product_photos,priority_for=priority_for)
+            now=datetime.utcnow()
+            if action=='iniciar': s.status='Em andamento';s.started_at=now;log(d,'INICIAR_OS',f'OS-{s.id:05d}')
+            elif action=='finalizar':
+                s.status='Finalizado';s.finished_at=now;s.work_done=request.form.get('work_done','').strip();s.notes=request.form.get('notes','').strip();add_photos(d,request.files.getlist('photos'),service_id=s.id);log(d,'FINALIZAR_OS',f'OS-{s.id:05d} | {s.work_done} | {s.notes}')
+            elif action=='prioridade' and session['role'] in ('admin','chefe'): s.priority=request.form.get('priority','Normal');log(d,'ALTERAR_PRIORIDADE_OS',f'OS-{s.id:05d} | {s.priority}')
+            d.commit();flash('Ordem de serviço atualizada.');return redirect(f'/servicos/{sid}')
+        p=d.get(Product,s.product_id) if s.product_id else None;u=d.get(User,s.responsible_id) if s.responsible_id else None;photos=d.query(Photo).filter(Photo.service_id==sid).order_by(Photo.created_at.desc()).all()
+    return shell('''<h1>OS-{{'%05d'%s.id}}</h1><div class="grid"><div><div class="panel"><h3>Dados da manutenção</h3><p><b>Cliente:</b> {{s.client or '-'}}</p><p><b>Produto:</b> {{p.name if p else 'Sem produto'}}</p><p><b>Patrimônio:</b> {{p.code if p else '-'}}</p><p><b>Problema:</b> {{s.problem}}</p><p><b>Responsável:</b> {{u.name if u else '-'}}</p><p><b>Status:</b> {{s.status}}</p><p><b>Prioridade:</b> {{priority_for(s)}}</p><p><b>Início:</b> {{s.started_at.strftime('%d/%m/%Y %H:%M:%S') if s.started_at else '-'}}</p><p><b>Finalização:</b> {{s.finished_at.strftime('%d/%m/%Y %H:%M:%S') if s.finished_at else '-'}}</p></div>{% if s.status!='Finalizado' %}<div class="panel"><h3>Ações</h3>{% if not s.started_at %}<form method="post"><input type="hidden" name="action" value="iniciar"><button class="btn green">▶ Iniciar agora</button></form>{% endif %}{% if s.started_at %}<form method="post" enctype="multipart/form-data" class="form"><input type="hidden" name="action" value="finalizar"><div class="field fullcol"><label>O QUE FOI FEITO</label><textarea name="work_done" rows="5" required></textarea></div><div class="field fullcol"><label>OBSERVAÇÃO DA FINALIZAÇÃO</label><textarea name="notes" rows="4"></textarea></div><div class="field fullcol"><label>📷 FOTOS DA FINALIZAÇÃO</label><input type="file" name="photos" accept="image/*" multiple></div><button class="btn green fullcol">✓ Finalizar na hora atual</button></form>{% endif %}</div>{% endif %}{% if session.role in ['admin','chefe'] and s.status!='Finalizado' %}<div class="panel"><h3>Prioridade</h3><form method="post"><input type="hidden" name="action" value="prioridade"><select name="priority"><option {% if s.priority=='Normal' %}selected{% endif %}>Normal</option><option {% if s.priority=='Pouca urgência' %}selected{% endif %}>Pouca urgência</option><option {% if s.priority=='Urgente' %}selected{% endif %}>Urgente</option></select> <button class="btn">Salvar prioridade</button></form></div>{% endif %}<div class="panel"><h3>📷 Fotos</h3><div class="photos">{% for ph in photos %}<a href="/fotos/{{ph.id}}"><img src="/fotos/{{ph.id}}"></a>{% else %}<p class="muted">Nenhuma foto.</p>{% endfor %}</div></div></div><div class="panel"><h3>Resultado</h3><p><b>O que foi feito:</b><br>{{s.work_done or '-'}}</p><p><b>Observação da finalização:</b><br>{{s.notes or '-'}}</p></div></div>''',s=s,p=p,u=u,photos=photos,priority_for=priority_for)
 
 @app.get('/relatorios')
 @auth
 def relatorios():
     with db() as d:
         q=d.query(Service)
+        start=request.args.get('start');end=request.args.get('end');rid=request.args.get('responsible_id');status=request.args.get('status');priority=request.args.get('priority')
+        if start: q=q.filter(Service.created_at>=datetime.fromisoformat(start))
+        if end: q=q.filter(Service.created_at<datetime.fromisoformat(end)+timedelta(days=1))
+        if rid and rid.isdigit(): q=q.filter(Service.responsible_id==int(rid))
+        if status: q=q.filter(Service.status==status)
+        if priority: q=q.filter(Service.priority==priority)
         if session['role']=='funcionario': q=q.filter(Service.responsible_id==session['uid'])
-        if request.args.get('responsible_id') and session['role'] in ('admin','chefe'): q=q.filter(Service.responsible_id==int(request.args['responsible_id']))
-        if request.args.get('status'): q=q.filter(Service.status==request.args['status'])
-        if request.args.get('priority'): q=q.filter(Service.priority==request.args['priority'])
-        if request.args.get('start'): q=q.filter(Service.created_at>=datetime.fromisoformat(request.args['start']))
-        if request.args.get('end'): q=q.filter(Service.created_at<datetime.fromisoformat(request.args['end'])+timedelta(days=1))
         services=q.order_by(Service.created_at.desc()).all();users=d.query(User).order_by(User.name).all();products=d.query(Product).order_by(Product.name).all()
-    return shell('''<h1>Relatórios</h1><div class="panel"><form class="form"><div class="field"><label>INÍCIO</label><input type="date" name="start" value="{{request.args.get('start','')}}"></div><div class="field"><label>FIM</label><input type="date" name="end" value="{{request.args.get('end','')}}"></div>{% if session.role in ['admin','chefe'] %}<div class="field"><label>FUNCIONÁRIO</label><select name="responsible_id"><option value="">Todos</option>{% for u in users %}<option value="{{u.id}}">{{u.name}}</option>{% endfor %}</select></div>{% endif %}<div class="field"><label>STATUS</label><select name="status"><option value="">Todos</option><option>Pendente</option><option>Em andamento</option><option>Finalizado</option></select></div><div class="field"><label>PRIORIDADE</label><select name="priority"><option value="">Todas</option><option>Normal</option><option>Pouca urgência</option><option>Urgente</option></select></div><button class="btn green fullcol">Filtrar</button></form></div><br><div class="actions"><a class="btn green" href="{{url_for('relatorio_csv',**request.args)}}">⬇ CSV</a><a class="btn green" href="{{url_for('relatorio_xlsx',**request.args)}}">⬇ Excel</a><a class="btn" href="{{url_for('relatorio_pdf',**request.args)}}">⬇ PDF</a><button class="btn" onclick="window.print()">🖨 Imprimir</button></div><br><div class="panel"><table class="table"><tr><th>OS</th><th>Cliente</th><th>Produto</th><th>Responsável</th><th>Prioridade</th><th>O que foi feito</th><th>Observação</th><th>Início</th><th>Finalização</th><th>Status</th></tr>{% for s in services %}<tr><td>OS-{{'%05d'%s.id}}</td><td>{{s.client or '-'}}</td><td>{% for p in products if p.id==s.product_id %}{{p.name}}{% endfor %}</td><td>{% for u in users if u.id==s.responsible_id %}{{u.name}}{% endfor %}</td><td>{{priority_for(s)}}</td><td>{{s.work_done or '-'}}</td><td>{{s.notes or '-'}}</td><td>{{s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '-'}}</td><td>{{s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '-'}}</td><td>{{s.status}}</td></tr>{% else %}<tr><td colspan="7">Nenhum serviço.</td></tr>{% endfor %}</table></div>''',services=services,users=users,priority_for=priority_for)
-def report_rows():
+    return shell('''<h1>Relatórios</h1><div class="panel"><form class="form"><div class="field"><label>INÍCIO</label><input type="date" name="start" value="{{request.args.get('start','')}}"></div><div class="field"><label>FIM</label><input type="date" name="end" value="{{request.args.get('end','')}}"></div>{% if session.role in ['admin','chefe'] %}<div class="field"><label>FUNCIONÁRIO</label><select name="responsible_id"><option value="">Todos</option>{% for u in users %}<option value="{{u.id}}">{{u.name}}</option>{% endfor %}</select></div>{% endif %}<div class="field"><label>STATUS</label><select name="status"><option value="">Todos</option><option>Pendente</option><option>Em andamento</option><option>Finalizado</option></select></div><div class="field"><label>PRIORIDADE</label><select name="priority"><option value="">Todas</option><option>Normal</option><option>Pouca urgência</option><option>Urgente</option></select></div><button class="btn green fullcol">Filtrar</button></form></div><br><div class="actions"><a class="btn green" href="{{url_for('relatorio_csv',**request.args)}}">⬇ CSV</a><a class="btn green" href="{{url_for('relatorio_xlsx',**request.args)}}">⬇ Excel</a><a class="btn" href="{{url_for('relatorio_pdf',**request.args)}}">⬇ PDF</a><button class="btn" onclick="window.print()">🖨 Imprimir</button></div><br><div class="panel"><table class="table"><tr><th>OS</th><th>Cliente</th><th>Produto</th><th>Responsável</th><th>Prioridade</th><th>O que foi feito</th><th>Observação</th><th>Início</th><th>Finalização</th><th>Status</th></tr>{% for s in services %}<tr><td>OS-{{'%05d'%s.id}}</td><td>{{s.client or '-'}}</td><td>{% for p in products if p.id==s.product_id %}{{p.name}}{% else %}-{% endfor %}</td><td>{% for u in users if u.id==s.responsible_id %}{{u.name}}{% else %}-{% endfor %}</td><td>{{priority_for(s)}}</td><td>{{s.work_done or '-'}}</td><td>{{s.notes or '-'}}</td><td>{{s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '-'}}</td><td>{{s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '-'}}</td><td>{{s.status}}</td></tr>{% else %}<tr><td colspan="10">Nenhum serviço.</td></tr>{% endfor %}</table></div>''',services=services,users=users,products=products,priority_for=priority_for)
+
+def filtered_services():
     with db() as d:
-        q=d.query(Service)
-        if session['role']=='funcionario': q=q.filter(Service.responsible_id==session['uid'])
-        if request.args.get('responsible_id') and session['role'] in ('admin','chefe'): q=q.filter(Service.responsible_id==int(request.args['responsible_id']))
-        if request.args.get('status'): q=q.filter(Service.status==request.args['status'])
-        if request.args.get('priority'): q=q.filter(Service.priority==request.args['priority'])
-        if request.args.get('start'): q=q.filter(Service.created_at>=datetime.fromisoformat(request.args['start']))
-        if request.args.get('end'): q=q.filter(Service.created_at<datetime.fromisoformat(request.args['end'])+timedelta(days=1))
-        return [(s,d.get(Product,s.product_id),d.get(User,s.responsible_id)) for s in q.order_by(Service.created_at).all()]
-@app.get('/relatorios/csv')
+        q=d.query(Service);start=request.args.get('start');end=request.args.get('end');rid=request.args.get('responsible_id');status=request.args.get('status');priority=request.args.get('priority')
+        if start:q=q.filter(Service.created_at>=datetime.fromisoformat(start))
+        if end:q=q.filter(Service.created_at<datetime.fromisoformat(end)+timedelta(days=1))
+        if rid and rid.isdigit():q=q.filter(Service.responsible_id==int(rid))
+        if status:q=q.filter(Service.status==status)
+        if priority:q=q.filter(Service.priority==priority)
+        if session['role']=='funcionario':q=q.filter(Service.responsible_id==session['uid'])
+        return q.order_by(Service.created_at.desc()).all()
+@app.get('/relatorios.csv')
 @auth
 def relatorio_csv():
-    out=io.StringIO();w=csv.writer(out);w.writerow(['OS','Cliente','Produto','Patrimônio','Prioridade','Status','Responsável','Entrada','Início','Finalização','O que foi feito','Observação da finalização'])
-    for s,p,u in report_rows(): w.writerow([f'OS-{s.id:05d}',s.client,p.name if p else 'Sem produto',p.code if p else '',priority_for(s),s.status,u.name if u else '',s.created_at.strftime('%d/%m/%Y %H:%M'),s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '',s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '',s.work_done,s.notes])
-    return send_file(io.BytesIO(out.getvalue().encode('utf-8-sig')),as_attachment=True,download_name='relatorio_sakamoto.csv',mimetype='text/csv')
-@app.get('/relatorios/xlsx')
+    services=filtered_services();out=io.StringIO();w=csv.writer(out);w.writerow(['OS','Cliente','Produto','Responsável','Prioridade','O que foi feito','Observação','Início','Finalização','Status'])
+    with db() as d:
+        for s in services:
+            p=d.get(Product,s.product_id) if s.product_id else None;u=d.get(User,s.responsible_id) if s.responsible_id else None;w.writerow([f'OS-{s.id:05d}',s.client,p.name if p else '-',u.name if u else '-',priority_for(s),s.work_done or '-',s.notes or '-',s.started_at.strftime('%d/%m/%Y %H:%M:%S') if s.started_at else '-',s.finished_at.strftime('%d/%m/%Y %H:%M:%S') if s.finished_at else '-',s.status])
+    return send_file(io.BytesIO(out.getvalue().encode('utf-8-sig')),mimetype='text/csv',as_attachment=True,download_name='relatorio.csv')
+@app.get('/relatorios.xlsx')
 @auth
 def relatorio_xlsx():
-    wb=Workbook();ws=wb.active;ws.title='Manutenções';ws.append(['OS','Cliente','Produto','Patrimônio','Prioridade','Status','Responsável','Entrada','Início','Finalização','O que foi feito','Observação da finalização'])
-    for s,p,u in report_rows(): ws.append([f'OS-{s.id:05d}',s.client,p.name if p else 'Sem produto',p.code if p else '',priority_for(s),s.status,u.name if u else '',s.created_at.strftime('%d/%m/%Y %H:%M'),s.started_at.strftime('%d/%m/%Y %H:%M') if s.started_at else '',s.finished_at.strftime('%d/%m/%Y %H:%M') if s.finished_at else '',s.work_done,s.notes])
-    buf=io.BytesIO();wb.save(buf);buf.seek(0);return send_file(buf,as_attachment=True,download_name='relatorio_sakamoto.xlsx',mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-@app.get('/relatorios/pdf')
+    services=filtered_services();wb=Workbook();ws=wb.active;ws.title='Relatório';ws.append(['OS','Cliente','Produto','Responsável','Prioridade','O que foi feito','Observação','Início','Finalização','Status'])
+    with db() as d:
+        for s in services:
+            p=d.get(Product,s.product_id) if s.product_id else None;u=d.get(User,s.responsible_id) if s.responsible_id else None;ws.append([f'OS-{s.id:05d}',s.client,p.name if p else '-',u.name if u else '-',priority_for(s),s.work_done or '-',s.notes or '-',s.started_at.strftime('%d/%m/%Y %H:%M:%S') if s.started_at else '-',s.finished_at.strftime('%d/%m/%Y %H:%M:%S') if s.finished_at else '-',s.status])
+    bio=io.BytesIO();wb.save(bio);bio.seek(0);return send_file(bio,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',as_attachment=True,download_name='relatorio.xlsx')
+@app.get('/relatorios.pdf')
 @auth
 def relatorio_pdf():
-    rows=report_rows();buf=io.BytesIO();c=canvas.Canvas(buf,pagesize=A4);w,h=A4;y=h-45;c.setFont('Helvetica-Bold',16);c.drawString(40,y,'SAKAMOTO — RELATÓRIO DE MANUTENÇÃO');y-=22;c.setFont('Helvetica',9);c.drawString(40,y,'Gerado em '+datetime.now().strftime('%d/%m/%Y %H:%M'));y-=25
-    for s,p,u in rows:
-        c.drawString(40,y,f'OS-{s.id:05d} | Cliente: {s.client or "-"} | Produto: {p.name if p else "Sem produto"}');y-=14;c.drawString(55,y,f'O que foi feito: {s.work_done or "-"}');y-=14;c.drawString(55,y,f'Observação: {s.notes or "-"}');y-=14;c.drawString(55,y,f'Status: {s.status} | Prioridade: {priority_for(s)} | Final: {s.finished_at.strftime("%d/%m/%Y %H:%M") if s.finished_at else "-"}');y-=18
-        if y<55:c.showPage();y=h-45;c.setFont('Helvetica',9)
-    c.save();buf.seek(0);return send_file(buf,as_attachment=True,download_name='relatorio_sakamoto.pdf',mimetype='application/pdf')
+    services=filtered_services();bio=io.BytesIO();c=canvas.Canvas(bio,pagesize=A4);y=810;c.setFont('Helvetica-Bold',12);c.drawString(40,y,'Relatório de Manutenções');y-=24;c.setFont('Helvetica',8)
+    with db() as d:
+        for s in services:
+            p=d.get(Product,s.product_id) if s.product_id else None;u=d.get(User,s.responsible_id) if s.responsible_id else None
+            lines=[f'OS-{s.id:05d} | Cliente: {s.client or "-"}',f'Produto: {p.name if p else "-"} | Responsável: {u.name if u else "-"}',f'Prioridade: {priority_for(s)} | Status: {s.status}',f'O que foi feito: {s.work_done or "-"}',f'Observação: {s.notes or "-"}',f'Início: {s.started_at.strftime("%d/%m/%Y %H:%M:%S") if s.started_at else "-"} | Finalização: {s.finished_at.strftime("%d/%m/%Y %H:%M:%S") if s.finished_at else "-"}']
+            for line in lines:
+                if y<60:c.showPage();y=810;c.setFont('Helvetica',8)
+                c.drawString(40,y,line[:125]);y-=12
+            y-=8
+    c.save();bio.seek(0);return send_file(bio,mimetype='application/pdf',as_attachment=True,download_name='relatorio.pdf')
 
 @app.get('/historico')
 @auth
 def historico():
     with db() as d:
-        q=d.query(Audit).order_by(Audit.created_at.desc()).limit(300)
+        q=d.query(Audit).order_by(Audit.created_at.desc())
         if session['role']=='funcionario': q=q.filter(Audit.user_id==session['uid'])
-        rows=q.all()
-    return shell('''<h1>Histórico</h1><div class="panel"><table class="table"><tr><th>Data</th><th>Ação</th><th>Detalhes</th></tr>{% for x in rows %}<tr><td>{{x.created_at.strftime('%d/%m/%Y %H:%M')}}</td><td>{{x.action}}</td><td>{{x.details}}</td></tr>{% else %}<tr><td colspan="3">Sem registros.</td></tr>{% endfor %}</table></div>''',rows=rows)
+        rows=q.limit(300).all();users=d.query(User).all();by_id={u.id:u.name for u in users}
+    return shell('''<h1>Histórico</h1><div class="panel"><table class="table"><tr><th>Data</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr>{% for r in rows %}<tr><td>{{r.created_at.strftime('%d/%m/%Y %H:%M:%S')}}</td><td>{{by_id.get(r.user_id,'Sistema')}}</td><td>{{r.action}}</td><td>{{r.details}}</td></tr>{% endfor %}</table></div>''',rows=rows,by_id=by_id)
 @app.route('/configuracoes',methods=['GET','POST'])
 @auth
 def configuracoes():
-    with db() as d:
-        u=d.get(User,session['uid'])
-        if request.method=='POST':
-            if not check_password_hash(u.password_hash,request.form.get('current_password','')): flash('Senha atual incorreta.');return redirect('/configuracoes')
-            new=request.form.get('new_password','');confirm=request.form.get('confirm_password','')
-            if len(new)<8 or new!=confirm: flash('A nova senha deve ter 8 caracteres e coincidir na confirmação.');return redirect('/configuracoes')
-            u.password_hash=generate_password_hash(new);d.commit();log(d,'ALTERAR_SENHA','Senha alterada pelo próprio usuário');d.commit();flash('Senha alterada com sucesso.');return redirect('/configuracoes')
-    return shell('''<h1>Configurações</h1><div class="grid"><div class="panel"><h3>Minha conta</h3><p><b>Nome:</b> {{session.name}}</p><p><b>Login:</b> {{session.username}}</p><p><b>Cargo:</b> {{roles[session.role]}}</p></div><div class="panel"><h3>Alterar senha</h3><form method="post"><div class="field"><label>SENHA ATUAL</label><input type="password" name="current_password" required></div><div class="field"><label>NOVA SENHA</label><input type="password" name="new_password" minlength="8" required></div><div class="field"><label>CONFIRMAR NOVA SENHA</label><input type="password" name="confirm_password" minlength="8" required></div><button class="btn green full">Alterar senha</button></form></div></div><br><div class="panel"><h3>Cargos</h3><p>👑 <b>Administrador:</b> acesso total e define os cargos.</p><p>🧑‍💼 <b>Chefe:</b> gerencia equipe e pode atribuir manutenções.</p><p>👷 <b>Funcionário:</b> vê e executa somente os trabalhos atribuídos a ele.</p></div>''')
-@app.get('/status')
-def status():
+    if request.method=='POST':
+        with db() as d:
+            u=d.get(User,session['uid'])
+            if not check_password_hash(u.password_hash,request.form['current_password']): flash('Senha atual incorreta.');return redirect('/configuracoes')
+            if request.form['new_password']!=request.form['confirm_password']: flash('As senhas não coincidem.');return redirect('/configuracoes')
+            if len(request.form['new_password'])<8: flash('A nova senha deve ter pelo menos 8 caracteres.');return redirect('/configuracoes')
+            u.password_hash=generate_password_hash(request.form['new_password']);d.commit();log(d,'ALTERAR_SENHA',u.username);d.commit();flash('Senha alterada.');return redirect('/configuracoes')
+    return shell('''<h1>Configurações</h1><div class="grid"><div class="panel"><h3>Minha conta</h3><p><b>Nome:</b> {{session.name}}</p><p><b>Login:</b> {{session.username}}</p><p><b>Cargo:</b> {{roles[session.role]}}</p></div><div class="panel"><h3>Alterar senha</h3><form method="post"><div class="field"><label>SENHA ATUAL</label><input type="password" name="current_password" required></div><div class="field"><label>NOVA SENHA</label><input type="password" name="new_password" minlength="8" required></div><div class="field"><label>CONFIRMAR NOVA SENHA</label><input type="password" name="confirm_password" minlength="8" required></div><button class="btn green full">Alterar senha</button></form></div></div><br><div class="panel"><h3>Cargos</h3><p>👑 <b>Administrador:</b> acesso total e define os cargos.</p><p>🧑‍💼 <b>Chefe:</b> gerencia equipe e pode atribuir manutenções.</p><p>👷 <b>Funcionário:</b> vê e executa somente os trabalhos atribuídos a ele.</p></div>''',roles=ROLES)
+
+@app.get('/health')
+def health():
     try:
-        init_db()
         with db() as d:return {'ok':True,'database':'connected','users':d.query(User).count(),'services':d.query(Service).count(),'products':d.query(Product).count()}
-    except Exception as e:return {'ok':False,'database':'error','error':str(e)[:300]},503
-@app.errorhandler(403)
-def forbidden(e): return shell('<h1>Acesso negado</h1><div class="panel">Você não tem permissão para esta área.</div>'),403
-if __name__=='__main__': init_db();app.run(host='0.0.0.0',port=int(os.getenv('PORT',5000)))
+    except Exception as e:return {'ok':False,'error':str(e)},500
+
+if __name__=='__main__': app.run(host='0.0.0.0',port=int(os.getenv('PORT','5000')))
