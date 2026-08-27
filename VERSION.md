@@ -30,7 +30,14 @@
 - Download em PDF, Excel e CSV e impressão.
 - PostgreSQL persistente configurado para o Render.
 - Migração de ordens antigas para o vínculo por produto.
+- Painel de **Gestão da Qualidade baseado na ISO 9001**, com rastreabilidade de não conformidades e ações corretivas.
+- Registro de ocorrência vinculado opcionalmente a uma ordem de serviço.
+- Controle de causa, ação corretiva, responsável, prazo, status e encerramento.
+- Registros de criação e encerramento das ocorrências no histórico de auditoria.
 - Render inicia o aplicativo principal `app:app`.
 
 ### Fluxo oficial
-**Cadastrar equipamento → adicionar fotos → definir prioridade → abrir ficha → enviar manutenção → selecionar funcionário → iniciar → adicionar fotos → finalizar → relatório/histórico.**
+**Cadastrar equipamento → adicionar fotos → definir prioridade → abrir ficha → enviar manutenção → selecionar funcionário → iniciar → adicionar fotos → finalizar → relatório/histórico → tratar não conformidades e ações corretivas.**
+
+### Gestão da qualidade
+O sistema oferece recursos operacionais alinhados a práticas de gestão da qualidade e rastreabilidade. Isso não representa certificação ISO 9001 da empresa.
