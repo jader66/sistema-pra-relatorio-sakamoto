@@ -1,0 +1,60 @@
+name: Adaptar sistema para celular
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  responsive:
+    if: ${{ !contains(github.event.head_commit.message, 'feat: adaptar sistema para celular') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Aplicar layout responsivo
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('app.py')
+          text = path.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '<meta charset="utf-8">',
+              '<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
+          )
+
+          responsive = '''@media(max-width:850px){
+          .side{width:64px;padding:12px 8px}.brand{font-size:0;padding:10px 8px;text-align:center}.brand:before{content:'S';font-size:26px}.brand small,.nav span{display:none}.nav a{padding:13px 8px;text-align:center;font-size:20px}.main{margin-left:64px;min-width:0}.top{height:auto;min-height:64px;padding:10px 12px;gap:8px;flex-wrap:wrap}.top .btn{padding:9px 12px;font-size:12px}.content{padding:16px 12px;width:100%;overflow:hidden}.cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:16px 0}.card,.panel{padding:14px;min-width:0}.num{font-size:24px}.label{font-size:12px}.grid,.form{grid-template-columns:1fr;gap:12px}.fullcol{grid-column:1}.table-wrap,.table-responsive{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.table{min-width:620px}.table th,.table td{padding:9px;font-size:12px;white-space:nowrap}.actions{gap:6px}.actions .btn{flex:1 1 auto;text-align:center}.photos{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.photos img{height:120px}input,select,textarea{font-size:16px;padding:12px}.btn{padding:11px 13px}.box{width:min(470px,calc(100vw - 24px));padding:24px 18px}.logo{font-size:34px}.sub{font-size:9px;letter-spacing:2px}.field{margin:10px 0}h1{font-size:26px}h2{font-size:21px}h3{font-size:18px}
+          }
+          @media(max-width:480px){
+          .side{width:58px}.main{margin-left:58px}.top{justify-content:space-between}.top>b{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.content{padding:12px 9px}.cards{grid-template-columns:1fr 1fr}.card{padding:12px}.num{font-size:21px}.actions .btn{width:100%;flex-basis:100%}.photos{grid-template-columns:1fr 1fr}.box{padding:22px 14px}.login{padding:12px}
+          }'''
+
+          text, count = re.subn(r'@media\(max-width:850px\)\{.*?\}\s*</style>', responsive + '\n</style>', text, count=1, flags=re.S)
+          if count != 1:
+              raise SystemExit('Bloco responsivo não encontrado; nenhuma alteração aplicada.')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Validar Python
+        run: python -m py_compile app.py
+
+      - name: Commitar alteração
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py
+          if git diff --cached --quiet; then
+            echo "Nenhuma alteração necessária."
+            exit 0
+          fi
+          git commit -m "feat: adaptar sistema para celular"
+          git push
