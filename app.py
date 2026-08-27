@@ -213,8 +213,8 @@ def servicos():
     with db() as d:
         q=d.query(Service)
         if session['role']=='funcionario': q=q.filter(Service.responsible_id==session['uid'])
-        services=q.order_by(Service.created_at.desc()).all();users=d.query(User).filter(User.active==True).all()
-    return shell('''<h1>Ordens de serviço</h1>{% if session.role in ['admin','chefe'] %}<a class="btn green" href="/servicos/novo">➕ Atribuir serviço</a><br><br>{% endif %}<div class="panel"><table class="table"><tr><th>OS</th><th>Produto</th><th>Prioridade</th><th>Status</th><th>Responsável</th><th>Ação</th></tr>{% for s in services %}<tr><td>OS-{{'%05d'%s.id}}</td><td>{% for p in [] %}{% endfor %}{{s.product_id}}</td><td>{{priority_for(s)}}</td><td>{{s.status}}</td><td>{% for u in users if u.id==s.responsible_id %}{{u.name}}{% endfor %}</td><td><a class="btn" href="/servicos/{{s.id}}">Abrir</a></td></tr>{% else %}<tr><td colspan="6">Nenhum serviço atribuído.</td></tr>{% endfor %}</table></div>''',services=services,users=users,products=products,priority_for=priority_for)
+        services=q.order_by(Service.created_at.desc()).all();users=d.query(User).filter(User.active==True).all();products=d.query(Product).order_by(Product.name).all()
+    return shell('''<h1>Ordens de serviço</h1>{% if session.role in ['admin','chefe'] %}<a class="btn green" href="/servicos/novo">➕ Atribuir serviço</a><br><br>{% endif %}<div class="panel"><table class="table"><tr><th>OS</th><th>Produto</th><th>Prioridade</th><th>Status</th><th>Responsável</th><th>Ação</th></tr>{% for s in services %}<tr><td>OS-{{'%05d'%s.id}}</td><td>{% for p in products if p.id==s.product_id %}{{p.name}}{% else %}Sem produto{% endfor %}</td><td>{{priority_for(s)}}</td><td>{{s.status}}</td><td>{% for u in users if u.id==s.responsible_id %}{{u.name}}{% endfor %}</td><td><a class="btn" href="/servicos/{{s.id}}">Abrir</a></td></tr>{% else %}<tr><td colspan="6">Nenhum serviço atribuído.</td></tr>{% endfor %}</table></div>''',services=services,users=users,products=products,priority_for=priority_for)
 
 @app.route('/servicos/<int:sid>',methods=['GET','POST'])
 @auth
