@@ -1,0 +1,39 @@
+name: Fix OS route
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Corrigir rota de ordens
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app.py')
+          s = p.read_text(encoding='utf-8')
+          old = "services=q.order_by(Service.created_at.desc()).all();users=d.query(User).filter(User.active==True).all()\n    return shell('''<h1>Ordens de serviço</h1>"
+          new = "services=q.order_by(Service.created_at.desc()).all();users=d.query(User).filter(User.active==True).all();products=d.query(Product).order_by(Product.name).all()\n    return shell('''<h1>Ordens de serviço</h1>"
+          if old not in s:
+              raise SystemExit('Trecho da rota /servicos não encontrado')
+          s = s.replace(old, new, 1)
+          old2 = "<td>{% for p in [] %}{% endfor %}{{s.product_id}}</td>"
+          new2 = "<td>{% for p in products if p.id==s.product_id %}{{p.name}}{% else %}Sem produto{% endfor %}</td>"
+          if old2 not in s:
+              raise SystemExit('Trecho do produto da tabela não encontrado')
+          s = s.replace(old2, new2, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Validar Python
+        run: python -m py_compile app.py
+      - name: Commitar correção
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py
+          git diff --cached --quiet || git commit -m 'fix: corrigir ordem de serviço'
+          git push
